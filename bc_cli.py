@@ -722,6 +722,13 @@ def train_label(line, num):
 def draw_train_marker(cv, x, y, color, r=11):
     # Marker posizione HD: disco colorato + pittogramma treno geometrico
     # (primitive canvas, niente font/emoji: nitido su qualsiasi schermo).
+    # Confinato dentro il canvas: a fine tratta non viene mai tagliato.
+    try:
+        h = cv.winfo_height()
+    except Exception:
+        h = 0
+    if h and h > 2 * (r + 2):
+        y = min(max(y, r + 2), h - r - 2)
     cv.create_oval(x - r, y - r, x + r, y + r,
                    fill=color, outline="white", width=2)
     ir = r * 0.68
@@ -1234,17 +1241,185 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
             d = a + timedelta(minutes=1)
         return a, d
 
+    def stop_key(s):
+        return str(s.get("stationId") or s.get("id") or s.get("stopId")
+                   or s.get("station") or s.get("name") or "?")
+
+    def build_row(i, is_last):
+        # Struttura fissa creata una sola volta; testi e binario si
+        # aggiornano a ogni refresh senza ricostruire (niente flicker,
+        # lo scroll resta dov'e').
+        vis = {"at": -1, "passed": False, "is_cur": False, "in_travel": False,
+               "cancelled": False, "mp": None}
+        row = tk.Frame(tl, bg=CARD)
+        row.pack(fill="x")
+        tcol = tk.Frame(row, bg=CARD, width=76)
+        tcol.pack(side="left", fill="y")
+        tcol.pack_propagate(False)
+        if i == 0:
+            t1 = tk.Label(tcol, font=("Segoe UI", 12, "bold"), bg=CARD, fg=TXT)
+            t1.pack(anchor="e", pady=(14, 0))
+            tk.Label(tcol, text="partenza", font=("Segoe UI", 8),
+                     bg=CARD, fg=TERT).pack(anchor="e")
+            t2 = None
+        elif is_last:
+            t1 = tk.Label(tcol, font=("Segoe UI", 12, "bold"), bg=CARD, fg=TXT)
+            t1.pack(anchor="e", pady=(14, 0))
+            tk.Label(tcol, text="arrivo", font=("Segoe UI", 8),
+                     bg=CARD, fg=TERT).pack(anchor="e")
+            t2 = None
+        else:
+            t1 = tk.Label(tcol, font=("Segoe UI", 11, "bold"), bg=CARD, fg=TXT)
+            t1.pack(anchor="e", pady=(10, 0))
+            t2 = tk.Label(tcol, font=("Segoe UI", 10), bg=CARD, fg=SUB)
+            t2.pack(anchor="e")
+
+        rail = tk.Canvas(row, width=26, height=ROW_H, bg=CARD,
+                         highlightthickness=0)
+        rail.pack(side="left", fill="y", padx=(10, 6))
+
+        def _paint_rail(_e=None):
+            try:
+                h = rail.winfo_height()
+            except Exception:
+                h = ROW_H
+            if h < 24:
+                h = ROW_H
+            rail.delete("all")
+            mid = h // 2
+            _at, _mp = vis["at"], vis["mp"]
+            # tratto sopra: percorso se siamo arrivati almeno a questa fermata
+            if i != 0:
+                rail.create_line(13, 0, 13, mid,
+                                 fill=hexcol if _at != -1 and _at >= i else TRACK,
+                                 width=3)
+            # tratto sotto: pieno se superata, parziale col marker se in tratta
+            if not is_last:
+                if _mp is not None:
+                    my = mid + (h - mid) * min(1.0, max(0.0, _mp))
+                    rail.create_line(13, mid, 13, my, fill=hexcol, width=3)
+                    rail.create_line(13, my, 13, h, fill=TRACK, width=3)
+                else:
+                    rail.create_line(13, mid, 13, h,
+                                     fill=hexcol if _at > i else TRACK, width=3)
+            if vis["cancelled"]:
+                rail.create_text(13, mid, text="×",
+                                 font=("Segoe UI", 14, "bold"), fill=ERR)
+            elif vis["is_cur"] or vis["in_travel"] or (_at == i and not vis["cancelled"]):
+                rail.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
+                                 outline=hexcol, width=2)
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=hexcol, outline=hexcol)
+            elif vis["passed"]:
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=hexcol, outline=hexcol)
+            else:
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=CARD, outline="#5B6675", width=2)
+            # marker treno in movimento lungo il segmento (come la Flutter)
+            if _mp is not None and not is_last and not vis["cancelled"]:
+                draw_train_marker(
+                    rail, 13, mid + (h - mid) * min(1.0, max(0.0, _mp)), hexcol)
+
+        rail.bind("<Configure>", _paint_rail)
+        info = tk.Frame(row, bg=CARD)
+        info.pack(side="left", fill="both", expand=True, pady=10)
+        top = tk.Frame(info, bg=CARD)
+        top.pack(fill="x")
+        name_lbl = tk.Label(top, font=("Segoe UI", 12, "bold"), bg=CARD, fg=TXT)
+        name_lbl.pack(side="left")
+        state_lbl = tk.Label(top, font=("Segoe UI", 8, "bold"), bg=CARD, fg=SUB)
+        state_lbl.pack(side="right")
+        sub = tk.Frame(info, bg=CARD)
+        sub.pack(fill="x", pady=(3, 0))
+        detail_lbl = tk.Label(sub, font=("Segoe UI", 10), bg=CARD, fg=SUB)
+        detail_lbl.pack(side="left")
+        delay_lbl = tk.Label(sub, font=("Segoe UI", 10, "bold"), bg=CARD, fg=SUB)
+        delay_lbl.pack(side="right")
+        return {"vis": vis, "paint": _paint_rail, "t1": t1, "t2": t2,
+                "name": name_lbl, "state": state_lbl,
+                "detail": detail_lbl, "delay": delay_lbl}
+
+    def paint_row(rec, i, s, n, is_last, at, now, eff, arrs, deps,
+                  seg, seg_p, dwell, no_clock, train_delay):
+        name = str(s.get("station") or s.get("stop") or s.get("stationName")
+                   or s.get("name") or "?")
+        arr = fmt_time(s.get("scheduledArrival") or s.get("arrival"))
+        dep = fmt_time(s.get("scheduledDeparture") or s.get("departure") or s.get("time"))
+        plat = str(s.get("platform") or s.get("actualPlatform") or "")
+        _own = next((s[k] for k in ("delay", "arrivalDelay", "departureDelay")
+                     if s.get(k) is not None), None)
+        if _own is None:
+            dl = train_delay
+        else:
+            try:
+                dl = int(_own)
+            except (TypeError, ValueError):
+                dl = train_delay
+        cancelled = bool(s.get("cancelled") or s.get("canceled") or s.get("isCancelled"))
+        passed = at >= i and at != -1
+        if no_clock:
+            is_cur = (at == i and not cancelled and eff[at] is not None
+                      and (now - eff[at]).total_seconds() <= 180)
+            in_travel = (at == i and not cancelled and eff[at] is not None
+                         and (now - eff[at]).total_seconds() > 180)
+        else:
+            is_cur = dwell and at == i and not cancelled
+            in_travel = seg == i and not cancelled
+        marker_p = seg_p if (seg == i and not is_last) else None
+        if cancelled:
+            st, st_fg = "SOPPRESSA", ERR
+        elif at == -1 and i == 0:
+            st, st_fg = "NON PARTITO", OK
+        elif at == n - 1 and is_last:
+            st, st_fg = "ARRIVATO", OK
+        elif is_cur:
+            st, st_fg = "QUI", OK
+        elif in_travel:
+            st, st_fg = "IN VIAGGIO", OK
+        else:
+            st, st_fg = "", SUB
+        rec["vis"].update(at=at, passed=passed, is_cur=is_cur,
+                           in_travel=in_travel, cancelled=cancelled,
+                           mp=marker_p)
+        if i == 0:
+            rec["t1"].configure(text=dep)
+        elif is_last:
+            rec["t1"].configure(text=arr)
+        else:
+            rec["t1"].configure(text=arr)
+            rec["t2"].configure(text=dep)
+        rec["name"].configure(
+            text=name,
+            fg=ERR if cancelled else (SUB if (passed and not is_cur and not in_travel) else TXT))
+        rec["state"].configure(text=st, fg=st_fg)
+        bits = []
+        if arr != dep and i != 0 and not is_last:
+            bits.append(f"{arr} → {dep}")
+        elif is_last:
+            bits.append(f"arrivo {arr}")
+        elif i == 0:
+            bits.append(f"partenza {dep}")
+        if plat:
+            bits.append(f"bin {plat}")
+        rec["detail"].configure(text="  •  ".join(bits))
+        rec["delay"].configure(text=f"{dl:+d} min" if (dl and not cancelled) else "",
+                                fg=delay_hex(dl))
+        rec["paint"]()
+
     def draw(data, train_delay=0):
         sts = [s for s in (data.get("stops") or data.get("stopovers") or [])
                if isinstance(s, dict)]
-        for w in tl.winfo_children():
-            w.destroy()
+        n = len(sts)
         if not sts:
+            state["tl_key"] = None
+            state["tl_rows"] = []
+            for w in tl.winfo_children():
+                w.destroy()
             tk.Label(tl, text="Nessuna fermata.", font=("Segoe UI", 10),
                      bg=CARD, fg=SUB, pady=12).pack()
             return 0, 0, {"frac": 0.0, "seg": -1, "seg_p": 0.0, "dwell": False}
         at, now, eff = position(sts, train_delay)
-        n = len(sts)
         tl_count_var.set(f"{n} fermate")
         # posizione frazionaria sul segmento (come la timeline Flutter):
         # fermo in stazione (dwell) oppure in tratta con % del segmento
@@ -1277,157 +1452,17 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
             frac = at / (n - 1)
         pos = {"frac": frac, "seg": seg, "seg_p": seg_p, "dwell": dwell}
         no_clock = 0 <= at < n and (arrs[at] is None or deps[at] is None)
-
+        # ricostruisci le righe solo se cambia la tratta, altrimenti aggiorna
+        key = tuple(stop_key(s) for s in sts)
+        if key != state.get("tl_key") or len(state.get("tl_rows") or []) != n:
+            for w in tl.winfo_children():
+                w.destroy()
+            state["tl_rows"] = [build_row(i, i == n - 1) for i in range(n)]
+            state["tl_key"] = key
+        rows = state["tl_rows"]
         for i, s in enumerate(sts):
-            name = str(s.get("station") or s.get("stop") or s.get("stationName")
-                       or s.get("name") or "?")
-            arr = fmt_time(s.get("scheduledArrival") or s.get("arrival"))
-            dep = fmt_time(s.get("scheduledDeparture") or s.get("departure") or s.get("time"))
-            plat = str(s.get("platform") or s.get("actualPlatform") or "")
-            # ritardo fermata: stimato proprio, altrimenti ritardo treno
-            # (da trip o da bacheche, come _estimateStopTimesGlobal)
-            _own = next((s[k] for k in ("delay", "arrivalDelay", "departureDelay")
-                         if s.get(k) is not None), None)
-            if _own is None:
-                dl = train_delay
-            else:
-                try:
-                    dl = int(_own)
-                except (TypeError, ValueError):
-                    dl = train_delay
-            cancelled = bool(s.get("cancelled") or s.get("canceled") or s.get("isCancelled"))
-            passed = at >= i and at != -1
-            if no_clock:
-                # senza orari utili: vecchia euristica sui 180s
-                is_cur = (at == i and not cancelled and eff[at] is not None
-                          and (now - eff[at]).total_seconds() <= 180)
-                in_travel = (at == i and not cancelled and eff[at] is not None
-                             and (now - eff[at]).total_seconds() > 180)
-            else:
-                is_cur = dwell and at == i and not cancelled
-                in_travel = seg == i and not cancelled
-            is_last = i == n - 1
-            marker_p = seg_p if (seg == i and not is_last) else None
-
-            if cancelled:
-                state, state_fg = "SOPPRESSA", ERR
-            elif at == -1 and i == 0:
-                state, state_fg = "NON PARTITO", OK
-            elif at == n - 1 and is_last:
-                state, state_fg = "ARRIVATO", OK
-            elif is_cur:
-                state, state_fg = "QUI", OK
-            elif in_travel:
-                state, state_fg = "IN VIAGGIO", OK
-            elif passed:
-                state, state_fg = "", SUB
-            else:
-                state, state_fg = "", SUB
-
-            row = tk.Frame(tl, bg=CARD)
-            row.pack(fill="x")
-
-            # colonna orari (destra allineata)
-            tcol = tk.Frame(row, bg=CARD, width=76)
-            tcol.pack(side="left", fill="y")
-            tcol.pack_propagate(False)
-            if i == 0:
-                tk.Label(tcol, text=dep, font=("Segoe UI", 12, "bold"),
-                         bg=CARD, fg=TXT).pack(anchor="e", pady=(14, 0))
-                tk.Label(tcol, text="partenza", font=("Segoe UI", 8),
-                         bg=CARD, fg=TERT).pack(anchor="e")
-            elif is_last:
-                tk.Label(tcol, text=arr, font=("Segoe UI", 12, "bold"),
-                         bg=CARD, fg=TXT).pack(anchor="e", pady=(14, 0))
-                tk.Label(tcol, text="arrivo", font=("Segoe UI", 8),
-                         bg=CARD, fg=TERT).pack(anchor="e")
-            else:
-                tk.Label(tcol, text=arr, font=("Segoe UI", 11, "bold"),
-                         bg=CARD, fg=TXT).pack(anchor="e", pady=(10, 0))
-                tk.Label(tcol, text=dep, font=("Segoe UI", 10),
-                         bg=CARD, fg=SUB).pack(anchor="e")
-
-            # binario verticale: ridisegnato sull'altezza reale della riga,
-            # altrimenti tra una riga e l'altra resta uno spazio vuoto
-            rail = tk.Canvas(row, width=26, height=ROW_H, bg=CARD,
-                             highlightthickness=0)
-            rail.pack(side="left", fill="y", padx=(10, 6))
-
-            def _paint_rail(_e=None, _r=rail, _i=i, _last=is_last,
-                            _canc=cancelled, _cur=is_cur, _tr=in_travel,
-                            _pass=passed, _at=at, _mp=marker_p):
-                try:
-                    h = _r.winfo_height()
-                except Exception:
-                    h = ROW_H
-                if h < 24:
-                    h = ROW_H
-                _r.delete("all")
-                mid = h // 2
-                # tratto sopra: percorso se siamo arrivati almeno a questa fermata
-                if _i != 0:
-                    _r.create_line(13, 0, 13, mid,
-                                   fill=hexcol if _at != -1 and _at >= _i else TRACK,
-                                   width=3)
-                # tratto sotto: pieno se superata, parziale col marker se in tratta
-                if not _last:
-                    if _mp is not None:
-                        my = mid + (h - mid) * min(1.0, max(0.0, _mp))
-                        _r.create_line(13, mid, 13, my, fill=hexcol, width=3)
-                        _r.create_line(13, my, 13, h, fill=TRACK, width=3)
-                    else:
-                        _r.create_line(13, mid, 13, h,
-                                       fill=hexcol if _at > _i else TRACK, width=3)
-                if _canc:
-                    _r.create_text(13, mid, text="×",
-                                   font=("Segoe UI", 14, "bold"), fill=ERR)
-                elif _cur or _tr or (_at == _i and not _canc):
-                    _r.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
-                                   outline=hexcol, width=2)
-                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                   fill=hexcol, outline=hexcol)
-                elif _pass:
-                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                   fill=hexcol, outline=hexcol)
-                else:
-                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                   fill=CARD, outline="#5B6675", width=2)
-                # marker treno in movimento lungo il segmento (come la Flutter)
-                if _mp is not None and not _last and not _canc:
-                    draw_train_marker(
-                        _r, 13, mid + (h - mid) * min(1.0, max(0.0, _mp)), hexcol)
-
-            rail.bind("<Configure>", _paint_rail)
-            _paint_rail()
-
-            # colonna info
-            info = tk.Frame(row, bg=CARD)
-            info.pack(side="left", fill="both", expand=True, pady=10)
-            top = tk.Frame(info, bg=CARD)
-            top.pack(fill="x")
-            name_fg = ERR if cancelled else (SUB if (passed and not is_cur and not in_travel) else TXT)
-            tk.Label(top, text=name, font=("Segoe UI", 12, "bold"),
-                     bg=CARD, fg=name_fg).pack(side="left")
-            if state:
-                tk.Label(top, text=state, font=("Segoe UI", 8, "bold"),
-                         bg=CARD, fg=state_fg).pack(side="right")
-            sub = tk.Frame(info, bg=CARD)
-            sub.pack(fill="x", pady=(3, 0))
-            bits = []
-            if arr != dep and i != 0 and not is_last:
-                bits.append(f"{arr} → {dep}")
-            elif is_last:
-                bits.append(f"arrivo {arr}")
-            elif i == 0:
-                bits.append(f"partenza {dep}")
-            if plat:
-                bits.append(f"bin {plat}")
-            tk.Label(sub, text="  •  ".join(bits), font=("Segoe UI", 10),
-                     bg=CARD, fg=SUB).pack(side="left")
-            if dl and not cancelled:
-                tk.Label(sub, text=f"{dl:+d} min", font=("Segoe UI", 10, "bold"),
-                         bg=CARD, fg=delay_hex(dl)).pack(side="right")
-
+            paint_row(rows[i], i, s, n, i == n - 1, at, now, eff,
+                      arrs, deps, seg, seg_p, dwell, no_clock, train_delay)
         return at, n, pos
 
     tk.Frame(content, bg=BG, height=24).pack()
@@ -2028,17 +2063,192 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
 
     ROW_H = 64
 
+    def stop_key(s):
+        return str(s.get("stationId") or s.get("id") or s.get("stopId")
+                   or s.get("station") or s.get("name") or "?")
+
+    def build_row(i, is_last):
+        # Struttura fissa creata una sola volta; testi e binario si
+        # aggiornano a ogni refresh senza ricostruire (niente flicker,
+        # lo scroll resta dov'e').
+        vis = {"at": -1, "passed": False, "is_cur": False, "in_travel": False,
+               "cancelled": False, "mp": None}
+        row = ctk.CTkFrame(tl, fg_color="transparent")
+        row.pack(fill="x")
+        # height esplicita: CTkFrame di default chiede 200px e con
+        # propagate off la riga diventerebbe altissima
+        tcol = ctk.CTkFrame(row, fg_color="transparent", width=76, height=10)
+        tcol.pack(side="left", fill="y")
+        tcol.pack_propagate(False)
+        if i == 0:
+            t1 = ctk.CTkLabel(tcol, font=FT_TIME, text_color=TXT,
+                              fg_color="transparent")
+            t1.pack(anchor="e", pady=(14, 0))
+            ctk.CTkLabel(tcol, text="partenza", font=FT_SUB, text_color=TERT,
+                         fg_color="transparent").pack(anchor="e")
+            t2 = None
+        elif is_last:
+            t1 = ctk.CTkLabel(tcol, font=FT_TIME, text_color=TXT,
+                              fg_color="transparent")
+            t1.pack(anchor="e", pady=(14, 0))
+            ctk.CTkLabel(tcol, text="arrivo", font=FT_SUB, text_color=TERT,
+                         fg_color="transparent").pack(anchor="e")
+            t2 = None
+        else:
+            t1 = ctk.CTkLabel(tcol, font=FT_TIME, text_color=TXT,
+                              fg_color="transparent")
+            t1.pack(anchor="e", pady=(10, 0))
+            t2 = ctk.CTkLabel(tcol, font=FT_SUB, text_color=SUB,
+                              fg_color="transparent")
+            t2.pack(anchor="e")
+
+        rail = tk.Canvas(row, width=26, height=ROW_H, bg=CARD,
+                         highlightthickness=0)
+        rail.pack(side="left", fill="y", padx=(10, 6))
+
+        def _paint_rail(_e=None):
+            try:
+                h = rail.winfo_height()
+            except Exception:
+                h = ROW_H
+            if h < 24:
+                h = ROW_H
+            rail.delete("all")
+            mid = h // 2
+            _at, _mp = vis["at"], vis["mp"]
+            if i != 0:
+                rail.create_line(13, 0, 13, mid,
+                                 fill=hexcol if _at != -1 and _at >= i else TRACK,
+                                 width=3)
+            if not is_last:
+                if _mp is not None:
+                    my = mid + (h - mid) * min(1.0, max(0.0, _mp))
+                    rail.create_line(13, mid, 13, my, fill=hexcol, width=3)
+                    rail.create_line(13, my, 13, h, fill=TRACK, width=3)
+                else:
+                    rail.create_line(13, mid, 13, h,
+                                     fill=hexcol if _at > i else TRACK, width=3)
+            if vis["cancelled"]:
+                rail.create_text(13, mid, text="×",
+                                 font=("Segoe UI", 14, "bold"), fill=ERR)
+            elif vis["is_cur"] or vis["in_travel"] or (_at == i and not vis["cancelled"]):
+                rail.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
+                                 outline=hexcol, width=2)
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=hexcol, outline=hexcol)
+            elif vis["passed"]:
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=hexcol, outline=hexcol)
+            else:
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=CARD, outline="#5B6675", width=2)
+            if _mp is not None and not is_last and not vis["cancelled"]:
+                draw_train_marker(
+                    rail, 13, mid + (h - mid) * min(1.0, max(0.0, _mp)), hexcol)
+
+        rail.bind("<Configure>", _paint_rail)
+        info = ctk.CTkFrame(row, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, pady=10)
+        top = ctk.CTkFrame(info, fg_color="transparent")
+        top.pack(fill="x")
+        name_lbl = ctk.CTkLabel(top, font=FT_NAME, text_color=TXT,
+                                fg_color="transparent")
+        name_lbl.pack(side="left")
+        state_lbl = ctk.CTkLabel(top, font=FT_SEC, text_color=SUB,
+                                 fg_color="transparent")
+        state_lbl.pack(side="right")
+        sub = ctk.CTkFrame(info, fg_color="transparent")
+        sub.pack(fill="x", pady=(3, 0))
+        detail_lbl = ctk.CTkLabel(sub, font=FT_SUB, text_color=SUB,
+                                  fg_color="transparent")
+        detail_lbl.pack(side="left")
+        delay_lbl = ctk.CTkLabel(sub, font=FT_PILL, text_color=SUB,
+                                 fg_color="transparent")
+        delay_lbl.pack(side="right")
+        return {"vis": vis, "paint": _paint_rail, "t1": t1, "t2": t2,
+                "name": name_lbl, "state": state_lbl,
+                "detail": detail_lbl, "delay": delay_lbl}
+
+    def paint_row(rec, i, s, n, is_last, at, now, eff, arrs, deps,
+                  seg, seg_p, dwell, no_clock, train_delay):
+        name = str(s.get("station") or s.get("stop") or s.get("stationName")
+                   or s.get("name") or "?")
+        arr = fmt_time(s.get("scheduledArrival") or s.get("arrival"))
+        dep = fmt_time(s.get("scheduledDeparture") or s.get("departure") or s.get("time"))
+        plat = str(s.get("platform") or s.get("actualPlatform") or "")
+        _own = next((s[k] for k in ("delay", "arrivalDelay", "departureDelay")
+                     if s.get(k) is not None), None)
+        if _own is None:
+            dl = train_delay
+        else:
+            try:
+                dl = int(_own)
+            except (TypeError, ValueError):
+                dl = train_delay
+        cancelled = bool(s.get("cancelled") or s.get("canceled") or s.get("isCancelled"))
+        passed = at >= i and at != -1
+        if no_clock:
+            is_cur = (at == i and not cancelled and eff[at] is not None
+                      and (now - eff[at]).total_seconds() <= 180)
+            in_travel = (at == i and not cancelled and eff[at] is not None
+                         and (now - eff[at]).total_seconds() > 180)
+        else:
+            is_cur = dwell and at == i and not cancelled
+            in_travel = seg == i and not cancelled
+        marker_p = seg_p if (seg == i and not is_last) else None
+        if cancelled:
+            st, st_fg = "SOPPRESSA", ERR
+        elif at == -1 and i == 0:
+            st, st_fg = "NON PARTITO", OK
+        elif at == n - 1 and is_last:
+            st, st_fg = "ARRIVATO", OK
+        elif is_cur:
+            st, st_fg = "QUI", OK
+        elif in_travel:
+            st, st_fg = "IN VIAGGIO", OK
+        else:
+            st, st_fg = "", SUB
+        rec["vis"].update(at=at, passed=passed, is_cur=is_cur,
+                           in_travel=in_travel, cancelled=cancelled,
+                           mp=marker_p)
+        if i == 0:
+            rec["t1"].configure(text=dep)
+        elif is_last:
+            rec["t1"].configure(text=arr)
+        else:
+            rec["t1"].configure(text=arr)
+            rec["t2"].configure(text=dep)
+        rec["name"].configure(
+            text=name,
+            text_color=ERR if cancelled else (SUB if (passed and not is_cur and not in_travel) else TXT))
+        rec["state"].configure(text=st, text_color=st_fg)
+        bits = []
+        if arr != dep and i != 0 and not is_last:
+            bits.append(f"{arr} → {dep}")
+        elif is_last:
+            bits.append(f"arrivo {arr}")
+        elif i == 0:
+            bits.append(f"partenza {dep}")
+        if plat:
+            bits.append(f"bin {plat}")
+        rec["detail"].configure(text="  •  ".join(bits))
+        rec["delay"].configure(text=f"{dl:+d} min" if (dl and not cancelled) else "",
+                                text_color=delay_hex(dl))
+        rec["paint"]()
+
     def draw(data, train_delay=0):
         sts = [s for s in (data.get("stops") or data.get("stopovers") or [])
                if isinstance(s, dict)]
-        for w in tl.winfo_children():
-            w.destroy()
+        n = len(sts)
         if not sts:
+            state["tl_key"] = None
+            state["tl_rows"] = []
+            for w in tl.winfo_children():
+                w.destroy()
             ctk.CTkLabel(tl, text="Nessuna fermata.", font=FT_SUB,
                          text_color=SUB, fg_color="transparent").pack(pady=12)
             return 0, 0, {"frac": 0.0, "seg": -1, "seg_p": 0.0, "dwell": False}
         at, now, eff = position(sts, train_delay)
-        n = len(sts)
         tl_count_var.set(f"{n} fermate")
         arrs, deps = [], []
         for s in sts:
@@ -2069,148 +2279,17 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
             frac = at / (n - 1)
         pos = {"frac": frac, "seg": seg, "seg_p": seg_p, "dwell": dwell}
         no_clock = 0 <= at < n and (arrs[at] is None or deps[at] is None)
-
+        # ricostruisci le righe solo se cambia la tratta, altrimenti aggiorna
+        key = tuple(stop_key(s) for s in sts)
+        if key != state.get("tl_key") or len(state.get("tl_rows") or []) != n:
+            for w in tl.winfo_children():
+                w.destroy()
+            state["tl_rows"] = [build_row(i, i == n - 1) for i in range(n)]
+            state["tl_key"] = key
+        rows = state["tl_rows"]
         for i, s in enumerate(sts):
-            name = str(s.get("station") or s.get("stop") or s.get("stationName")
-                       or s.get("name") or "?")
-            arr = fmt_time(s.get("scheduledArrival") or s.get("arrival"))
-            dep = fmt_time(s.get("scheduledDeparture") or s.get("departure") or s.get("time"))
-            plat = str(s.get("platform") or s.get("actualPlatform") or "")
-            _own = next((s[k] for k in ("delay", "arrivalDelay", "departureDelay")
-                         if s.get(k) is not None), None)
-            if _own is None:
-                dl = train_delay
-            else:
-                try:
-                    dl = int(_own)
-                except (TypeError, ValueError):
-                    dl = train_delay
-            cancelled = bool(s.get("cancelled") or s.get("canceled") or s.get("isCancelled"))
-            passed = at >= i and at != -1
-            if no_clock:
-                is_cur = (at == i and not cancelled and eff[at] is not None
-                          and (now - eff[at]).total_seconds() <= 180)
-                in_travel = (at == i and not cancelled and eff[at] is not None
-                             and (now - eff[at]).total_seconds() > 180)
-            else:
-                is_cur = dwell and at == i and not cancelled
-                in_travel = seg == i and not cancelled
-            is_last = i == n - 1
-            marker_p = seg_p if (seg == i and not is_last) else None
-
-            if cancelled:
-                st, st_fg = "SOPPRESSA", ERR
-            elif at == -1 and i == 0:
-                st, st_fg = "NON PARTITO", OK
-            elif at == n - 1 and is_last:
-                st, st_fg = "ARRIVATO", OK
-            elif is_cur:
-                st, st_fg = "QUI", OK
-            elif in_travel:
-                st, st_fg = "IN VIAGGIO", OK
-            else:
-                st, st_fg = "", SUB
-
-            row = ctk.CTkFrame(tl, fg_color="transparent")
-            row.pack(fill="x")
-
-            # height esplicita: CTkFrame di default chiede 200px e con
-            # propagate off la riga diventerebbe altissima
-            tcol = ctk.CTkFrame(row, fg_color="transparent", width=76, height=10)
-            tcol.pack(side="left", fill="y")
-            tcol.pack_propagate(False)
-            if i == 0:
-                ctk.CTkLabel(tcol, text=dep, font=FT_TIME, text_color=TXT,
-                             fg_color="transparent").pack(anchor="e", pady=(14, 0))
-                ctk.CTkLabel(tcol, text="partenza", font=FT_SUB, text_color=TERT,
-                             fg_color="transparent").pack(anchor="e")
-            elif is_last:
-                ctk.CTkLabel(tcol, text=arr, font=FT_TIME, text_color=TXT,
-                             fg_color="transparent").pack(anchor="e", pady=(14, 0))
-                ctk.CTkLabel(tcol, text="arrivo", font=FT_SUB, text_color=TERT,
-                             fg_color="transparent").pack(anchor="e")
-            else:
-                ctk.CTkLabel(tcol, text=arr, font=FT_TIME, text_color=TXT,
-                             fg_color="transparent").pack(anchor="e", pady=(10, 0))
-                ctk.CTkLabel(tcol, text=dep, font=FT_SUB, text_color=SUB,
-                             fg_color="transparent").pack(anchor="e")
-
-            rail = tk.Canvas(row, width=26, height=ROW_H, bg=CARD,
-                             highlightthickness=0)
-            rail.pack(side="left", fill="y", padx=(10, 6))
-
-            def _paint_rail(_e=None, _r=rail, _i=i, _last=is_last,
-                            _canc=cancelled, _cur=is_cur, _tr=in_travel,
-                            _pass=passed, _at=at, _mp=marker_p):
-                try:
-                    h = _r.winfo_height()
-                except Exception:
-                    h = ROW_H
-                if h < 24:
-                    h = ROW_H
-                _r.delete("all")
-                mid = h // 2
-                if _i != 0:
-                    _r.create_line(13, 0, 13, mid,
-                                   fill=hexcol if _at != -1 and _at >= _i else TRACK,
-                                   width=3)
-                if not _last:
-                    if _mp is not None:
-                        my = mid + (h - mid) * min(1.0, max(0.0, _mp))
-                        _r.create_line(13, mid, 13, my, fill=hexcol, width=3)
-                        _r.create_line(13, my, 13, h, fill=TRACK, width=3)
-                    else:
-                        _r.create_line(13, mid, 13, h,
-                                       fill=hexcol if _at > _i else TRACK, width=3)
-                if _canc:
-                    _r.create_text(13, mid, text="×",
-                                   font=("Segoe UI", 14, "bold"), fill=ERR)
-                elif _cur or _tr or (_at == _i and not _canc):
-                    _r.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
-                                   outline=hexcol, width=2)
-                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                   fill=hexcol, outline=hexcol)
-                elif _pass:
-                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                   fill=hexcol, outline=hexcol)
-                else:
-                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                   fill=CARD, outline="#5B6675", width=2)
-                if _mp is not None and not _last and not _canc:
-                    my = mid + (h - mid) * min(1.0, max(0.0, _mp))
-                    _r.create_oval(13 - 7, my - 7, 13 + 7, my + 7,
-                                   fill=hexcol, outline="white", width=2)
-
-            rail.bind("<Configure>", _paint_rail)
-            _paint_rail()
-
-            info = ctk.CTkFrame(row, fg_color="transparent")
-            info.pack(side="left", fill="both", expand=True, pady=10)
-            top = ctk.CTkFrame(info, fg_color="transparent")
-            top.pack(fill="x")
-            name_fg = ERR if cancelled else (SUB if (passed and not is_cur and not in_travel) else TXT)
-            ctk.CTkLabel(top, text=name, font=FT_NAME, text_color=name_fg,
-                         fg_color="transparent").pack(side="left")
-            if st:
-                ctk.CTkLabel(top, text=st, font=FT_SEC, text_color=st_fg,
-                             fg_color="transparent").pack(side="right")
-            sub = ctk.CTkFrame(info, fg_color="transparent")
-            sub.pack(fill="x", pady=(3, 0))
-            bits = []
-            if arr != dep and i != 0 and not is_last:
-                bits.append(f"{arr} → {dep}")
-            elif is_last:
-                bits.append(f"arrivo {arr}")
-            elif i == 0:
-                bits.append(f"partenza {dep}")
-            if plat:
-                bits.append(f"bin {plat}")
-            ctk.CTkLabel(sub, text="  •  ".join(bits), font=FT_SUB,
-                         text_color=SUB, fg_color="transparent").pack(side="left")
-            if dl and not cancelled:
-                ctk.CTkLabel(sub, text=f"{dl:+d} min", font=FT_PILL,
-                             text_color=delay_hex(dl),
-                             fg_color="transparent").pack(side="right")
+            paint_row(rows[i], i, s, n, i == n - 1, at, now, eff,
+                      arrs, deps, seg, seg_p, dwell, no_clock, train_delay)
         return at, n, pos
 
     ctk.CTkFrame(content, fg_color=BG, height=24).pack()

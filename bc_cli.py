@@ -4,7 +4,8 @@
 Stessi endpoint dell'app Flutter BCTransporterMobileApp, usabili da console.
 
 Uso:
-    python bc_cli.py                       -> menu interattivo colorato
+    python bc_cli.py                       -> menu interattivo (ricorda paese/recenti,
+                                                invio=aggiorna, testo=cerca stazione)
     python bc_cli.py --help                -> aiuto
     python bc_cli.py treni --cerca "bari" [--paese IT]
     python bc_cli.py treni --partenze <id> [--paese IT] [--arrivi]
@@ -419,17 +420,11 @@ def print_timeline(stops):
             else:
                 print(f"  {dim('│')}")
 
-def train_board(station_id, country, arrivi):
-    ep = "arrivals" if arrivi else "departures"
-    p_title(f"🚂 {'Arrivi' if arrivi else 'Partenze'} · {station_id} [{country}]")
-    url = f"{TRAINBOARD}/{country}/{ep}?stationId={urllib.parse.quote(station_id)}"
-    p_dim(f"GET {url}")
-    try:
-        lst = as_list(get_json(url))
-    except Exception as e:
-        return p_err(f"Errore tabellone: {e}")
+def print_board_table(lst, arrivi):
+    """Tabella tabellone identica per nazionale e regionali (stesso formato)."""
     if not lst:
-        return p_warn("Nessun treno trovato.")
+        p_warn("Nessun treno trovato.")
+        return []
     head_place = 'PROVENIENZA' if arrivi else 'DESTINAZIONE'
     rows = []
     data_rows = []
@@ -439,7 +434,7 @@ def train_board(station_id, country, arrivi):
         e = raw.get("data") if isinstance(raw.get("data"), dict) else raw
         line = str(e.get("line") or e.get("category") or "")
         num = str(e.get("tripNumber") or e.get("trainNumber") or "")
-        label = line if (num and num in line) else (line + " " + num).strip()
+        label = train_label(line, num)
         cat = train_category(line, e.get("category"))
         place = short(str((e.get("origin") if arrivi else e.get("destination"))
                           or e.get("stationName") or "—"), 32)
@@ -460,6 +455,17 @@ def train_board(station_id, country, arrivi):
     p_dim(f"Totale: {len(lst)} (mostrati max 30) · tasto 4 = timeline del treno")
     return data_rows
 
+def train_board(station_id, country, arrivi):
+    ep = "arrivals" if arrivi else "departures"
+    p_title(f"🚂 {'Arrivi' if arrivi else 'Partenze'} · {station_id} [{country}]")
+    url = f"{TRAINBOARD}/{country}/{ep}?stationId={urllib.parse.quote(station_id)}"
+    p_dim(f"GET {url}")
+    try:
+        lst = as_list(get_json(url))
+    except Exception as e:
+        return p_err(f"Errore tabellone: {e}")
+    return print_board_table(lst, arrivi) or []
+
 def train_details(numero, stazione, country):
     p_title(f"🚂 Dettaglio treno {numero} @ {stazione} [{country}]")
     url = (f"{TRAINBOARD}/{country}/details?trainNumber={urllib.parse.quote(numero)}"
@@ -478,9 +484,24 @@ def train_details(numero, stazione, country):
     print(f"  {bold('Binario:')} {e.get('platform') or '—'}")
     print_timeline(e.get("stops") or e.get("stopovers") or [])
 
-def train_trip_data(trip_id, country):
-    data = get_json(f"{TRAINBOARD}/{country}/trip?tripId={urllib.parse.quote(trip_id)}")
-    return (data.get("data") if isinstance(data, dict) else None) or data or {}
+def train_trip_data(trip_id, country, base=None):
+    # base = None -> nazionale (TRAINBOARD); altrimenti base regionale
+    # (es. .../api/it/trains/trenord). Dual-try come reg_trip, mai vuoto.
+    q = urllib.parse.quote(trip_id)
+    bases = [base] if base else [f"{TRAINBOARD}/{country}"]
+    last = {}
+    for b in bases:
+        for url in (f"{b}/trip?tripId={q}", f"{b}/trip/{q}"):
+            try:
+                data = get_json(url, timeout=12)
+            except Exception:
+                continue
+            e = (data.get("data") if isinstance(data, dict) else None) or data or {}
+            if isinstance(e, dict) and (e.get("stops") or e.get("stopovers")):
+                return e
+            if isinstance(e, dict) and e:
+                last = e
+    return last
 
 # -- Fallback ritardo dai tabelloni (port di
 # TrainProvider.refreshDelayFromUpcomingStations in
@@ -513,7 +534,8 @@ def _unwrap_board(raw):
 
 def refresh_delay_from_upcoming_stations(stops, trip_id="", train_number="",
                                          destination="", country="IT",
-                                         current_delay=None, max_stations=3):
+                                         current_delay=None, max_stations=3,
+                                         board_base=None):
     """Cerca il ritardo nei tabelloni delle prossime fermate.
 
     Il trip endpoint spesso risponde delay=null mentre le bacheche di
@@ -522,6 +544,8 @@ def refresh_delay_from_upcoming_stations(stops, trip_id="", train_number="",
     stazione a stazione). Isteresi come nell'app: se il trip non fornisce
     alcun delay (None) adotta subito, altrimenti servono 2 conferme
     consecutive dello stesso valore. Ritorna (delay:int|None, stazione:str|None).
+    board_base = base tabelloni regionali (es. .../api/it/trains/trenord),
+    altrimenti tabelloni nazionali TRAINBOARD.
     """
     from datetime import datetime, timezone, timedelta
     items = [s for s in (stops or []) if isinstance(s, dict)]
@@ -569,9 +593,12 @@ def refresh_delay_from_upcoming_stations(stops, trip_id="", train_number="",
         for ep in modes:
             is_arr = (ep == "arrivals")
             try:
-                board = as_list(get_json(
-                    f"{TRAINBOARD}/{st_country}/{ep}?stationId={urllib.parse.quote(station_id)}",
-                    timeout=8))
+                if board_base:
+                    url = f"{board_base}/{ep}?stationId={urllib.parse.quote(station_id)}"
+                else:
+                    url = (f"{TRAINBOARD}/{st_country}/{ep}"
+                           f"?stationId={urllib.parse.quote(station_id)}")
+                board = as_list(get_json(url, timeout=8))
             except Exception:
                 continue
             match = None
@@ -692,13 +719,44 @@ def train_label(line, num):
         return line
     return (line + " " + num).strip()
 
-def open_timeline_gui(trip_id, country):
-    # Finestra grafica rinnovata con componenti moderni in stile Material/Fluent (solo stdlib)
+def draw_train_marker(cv, x, y, color, r=11):
+    # Marker posizione HD: disco colorato + pittogramma treno geometrico
+    # (primitive canvas, niente font/emoji: nitido su qualsiasi schermo).
+    cv.create_oval(x - r, y - r, x + r, y + r,
+                   fill=color, outline="white", width=2)
+    ir = r * 0.68
+    cv.create_oval(x - ir, y - ir, x + ir, y + ir, fill="white", outline="")
+    bw, bh = ir * 1.02, ir * 1.12
+    cv.create_rectangle(x - bw / 2, y - bh / 2, x + bw / 2, y + bh * 0.32,
+                        fill=color, outline="")
+    cv.create_rectangle(x - bw * 0.30, y - bh * 0.30, x + bw * 0.30, y + bh * 0.04,
+                        fill="white", outline="")
+    wr = max(1.2, ir * 0.15)
+    for sx in (-1, 1):
+        cv.create_oval(x + sx * bw * 0.27 - wr, y + bh * 0.30,
+                       x + sx * bw * 0.27 + wr, y + bh * 0.30 + wr * 2,
+                       fill=color, outline="")
+    cv.create_line(x, y - bh / 2, x, y - bh / 2 - ir * 0.32,
+                   fill=color, width=max(1, int(ir * 0.14)))
+
+def open_timeline_gui(trip_id, country, trip_base=None, board_base=None):
+    """Dispatcher grafica: CustomTkinter se disponibile, tkinter altrimenti."""
+    try:
+        import customtkinter  # noqa: F401
+    except ImportError:
+        p_dim("CustomTkinter assente: uso finestra base (pip install customtkinter).")
+        return open_timeline_tk(trip_id, country, trip_base, board_base)
+    return open_timeline_ctk(trip_id, country, trip_base, board_base)
+
+def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
+    # Stessa finestra per nazionale e regionali: cambia solo la base URL
+    # (trip_base/board_base = es. .../api/it/trains/trenord, su
+    # betacloud-transporter.is-cool.dev). Resto identico.
     import tkinter as tk
     from tkinter import ttk, messagebox, simpledialog
     from datetime import datetime, timezone
     try:
-        trip = train_trip_data(trip_id, country)
+        trip = train_trip_data(trip_id, country, base=trip_base)
     except Exception as e:
         return p_err(f"Trip: {e}")
     stops = [s for s in (trip.get("stops") or trip.get("stopovers") or [])
@@ -1158,6 +1216,24 @@ def open_timeline_gui(trip_id, country):
 
     ROW_H = 64
 
+    def stop_eff(s, delay):
+        # Mirror di _estimateStopTimesGlobal della sheet: stimati, altrimenti
+        # programmati + ritardo treno (con backfill ±1 min se manca un lato)
+        a = parse_utc(s.get("estimatedArrival"))
+        if a is None:
+            a = shift(parse_utc(s.get("scheduledArrival")) or parse_utc(s.get("arrival")),
+                      delay)
+        d = parse_utc(s.get("estimatedDeparture"))
+        if d is None:
+            d = shift(parse_utc(s.get("departure")) or parse_utc(s.get("scheduledDeparture"))
+                      or parse_utc(s.get("time")), delay)
+        from datetime import timedelta
+        if a is None and d is not None:
+            a = d - timedelta(minutes=1)
+        if d is None and a is not None:
+            d = a + timedelta(minutes=1)
+        return a, d
+
     def draw(data, train_delay=0):
         sts = [s for s in (data.get("stops") or data.get("stopovers") or [])
                if isinstance(s, dict)]
@@ -1166,10 +1242,41 @@ def open_timeline_gui(trip_id, country):
         if not sts:
             tk.Label(tl, text="Nessuna fermata.", font=("Segoe UI", 10),
                      bg=CARD, fg=SUB, pady=12).pack()
-            return 0, 0
+            return 0, 0, {"frac": 0.0, "seg": -1, "seg_p": 0.0, "dwell": False}
         at, now, eff = position(sts, train_delay)
         n = len(sts)
         tl_count_var.set(f"{n} fermate")
+        # posizione frazionaria sul segmento (come la timeline Flutter):
+        # fermo in stazione (dwell) oppure in tratta con % del segmento
+        arrs, deps = [], []
+        for s in sts:
+            a, dpt = stop_eff(s, train_delay)
+            arrs.append(a)
+            deps.append(dpt)
+        seg, seg_p, dwell = -1, 0.0, False
+        if 0 <= at < n - 1:
+            a0, d0, a1 = arrs[at], deps[at], arrs[at + 1]
+            if a0 is not None and d0 is not None and a0 <= now <= d0:
+                dwell = True
+            elif (d0 is not None and a1 is not None and a1 > d0
+                    and d0 <= now < a1):
+                total = (a1 - d0).total_seconds()
+                seg = at
+                seg_p = min(1.0, max(0.0, (now - d0).total_seconds() / total)) if total > 0 else 1.0
+        if n <= 1:
+            frac = 1.0 if at >= 0 else 0.0
+        elif at == -1:
+            frac = 0.0
+        elif at >= n - 1:
+            frac = 1.0
+        elif dwell:
+            frac = at / (n - 1)
+        elif seg >= 0:
+            frac = (seg + seg_p) / (n - 1)
+        else:
+            frac = at / (n - 1)
+        pos = {"frac": frac, "seg": seg, "seg_p": seg_p, "dwell": dwell}
+        no_clock = 0 <= at < n and (arrs[at] is None or deps[at] is None)
 
         for i, s in enumerate(sts):
             name = str(s.get("station") or s.get("stop") or s.get("stationName")
@@ -1190,11 +1297,17 @@ def open_timeline_gui(trip_id, country):
                     dl = train_delay
             cancelled = bool(s.get("cancelled") or s.get("canceled") or s.get("isCancelled"))
             passed = at >= i and at != -1
-            is_cur = (at == i and not cancelled and eff[at] is not None
-                      and (now - eff[at]).total_seconds() <= 180)
-            in_travel = (at == i and not cancelled and eff[at] is not None
-                         and (now - eff[at]).total_seconds() > 180)
+            if no_clock:
+                # senza orari utili: vecchia euristica sui 180s
+                is_cur = (at == i and not cancelled and eff[at] is not None
+                          and (now - eff[at]).total_seconds() <= 180)
+                in_travel = (at == i and not cancelled and eff[at] is not None
+                             and (now - eff[at]).total_seconds() > 180)
+            else:
+                is_cur = dwell and at == i and not cancelled
+                in_travel = seg == i and not cancelled
             is_last = i == n - 1
+            marker_p = seg_p if (seg == i and not is_last) else None
 
             if cancelled:
                 state, state_fg = "SOPPRESSA", ERR
@@ -1234,32 +1347,58 @@ def open_timeline_gui(trip_id, country):
                 tk.Label(tcol, text=dep, font=("Segoe UI", 10),
                          bg=CARD, fg=SUB).pack(anchor="e")
 
-            # binario verticale
+            # binario verticale: ridisegnato sull'altezza reale della riga,
+            # altrimenti tra una riga e l'altra resta uno spazio vuoto
             rail = tk.Canvas(row, width=26, height=ROW_H, bg=CARD,
                              highlightthickness=0)
             rail.pack(side="left", fill="y", padx=(10, 6))
-            mid = ROW_H // 2
-            # tratto sopra: percorso se siamo arrivati almeno a questa fermata
-            if i != 0:
-                rail.create_line(13, 0, 13, mid,
-                                 fill=hexcol if at != -1 and at >= i else TRACK, width=3)
-            # tratto sotto: percorso solo se abbiamo superato questa fermata
-            if not is_last:
-                rail.create_line(13, mid, 13, ROW_H,
-                                 fill=hexcol if at > i else TRACK, width=3)
-            if cancelled:
-                rail.create_text(13, mid, text="×", font=("Segoe UI", 14, "bold"), fill=ERR)
-            elif is_cur or in_travel or (at == i and not cancelled):
-                rail.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
-                                 outline=hexcol, width=2)
-                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                 fill=hexcol, outline=hexcol)
-            elif passed:
-                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                 fill=hexcol, outline=hexcol)
-            else:
-                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
-                                 fill=CARD, outline="#5B6675", width=2)
+
+            def _paint_rail(_e=None, _r=rail, _i=i, _last=is_last,
+                            _canc=cancelled, _cur=is_cur, _tr=in_travel,
+                            _pass=passed, _at=at, _mp=marker_p):
+                try:
+                    h = _r.winfo_height()
+                except Exception:
+                    h = ROW_H
+                if h < 24:
+                    h = ROW_H
+                _r.delete("all")
+                mid = h // 2
+                # tratto sopra: percorso se siamo arrivati almeno a questa fermata
+                if _i != 0:
+                    _r.create_line(13, 0, 13, mid,
+                                   fill=hexcol if _at != -1 and _at >= _i else TRACK,
+                                   width=3)
+                # tratto sotto: pieno se superata, parziale col marker se in tratta
+                if not _last:
+                    if _mp is not None:
+                        my = mid + (h - mid) * min(1.0, max(0.0, _mp))
+                        _r.create_line(13, mid, 13, my, fill=hexcol, width=3)
+                        _r.create_line(13, my, 13, h, fill=TRACK, width=3)
+                    else:
+                        _r.create_line(13, mid, 13, h,
+                                       fill=hexcol if _at > _i else TRACK, width=3)
+                if _canc:
+                    _r.create_text(13, mid, text="×",
+                                   font=("Segoe UI", 14, "bold"), fill=ERR)
+                elif _cur or _tr or (_at == _i and not _canc):
+                    _r.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
+                                   outline=hexcol, width=2)
+                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                   fill=hexcol, outline=hexcol)
+                elif _pass:
+                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                   fill=hexcol, outline=hexcol)
+                else:
+                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                   fill=CARD, outline="#5B6675", width=2)
+                # marker treno in movimento lungo il segmento (come la Flutter)
+                if _mp is not None and not _last and not _canc:
+                    draw_train_marker(
+                        _r, 13, mid + (h - mid) * min(1.0, max(0.0, _mp)), hexcol)
+
+            rail.bind("<Configure>", _paint_rail)
+            _paint_rail()
 
             # colonna info
             info = tk.Frame(row, bg=CARD)
@@ -1286,16 +1425,16 @@ def open_timeline_gui(trip_id, country):
             tk.Label(sub, text="  •  ".join(bits), font=("Segoe UI", 10),
                      bg=CARD, fg=SUB).pack(side="left")
             if dl and not cancelled:
-                tk.Label(sub, text=f"+{dl} min", font=("Segoe UI", 10, "bold"),
+                tk.Label(sub, text=f"{dl:+d} min", font=("Segoe UI", 10, "bold"),
                          bg=CARD, fg=delay_hex(dl)).pack(side="right")
 
-        return at, n
+        return at, n, pos
 
     tk.Frame(content, bg=BG, height=24).pack()
 
     def refresh():
         try:
-            data = train_trip_data(trip_id, country)
+            data = train_trip_data(trip_id, country, base=trip_base)
         except Exception:
             return
         state["trip"] = data
@@ -1312,7 +1451,8 @@ def open_timeline_gui(trip_id, country):
         _dest = stop_name(data.get("destination"))
         fb_delay, fb_station = refresh_delay_from_upcoming_stations(
             _stops, trip_id=trip_id, train_number=num, destination=_dest,
-            country=country, current_delay=trip_delay)
+            country=country, current_delay=trip_delay,
+            board_base=board_base)
         if fb_delay is not None:
             d = fb_delay
             state["delay_src"] = f"bacheca {fb_station}" if fb_station else "bacheca"
@@ -1322,12 +1462,15 @@ def open_timeline_gui(trip_id, country):
         else:
             d = 0
             state["delay_src"] = ""
-        at, n = draw(data, d)
+        at, n, pos = draw(data, d)
+        frac = max(0.0, min(1.0, pos.get("frac", 0.0)))
+        seg, seg_p = pos.get("seg", -1), pos.get("seg_p", 0.0)
         title_var.set(train_label(data.get('line') or data.get('category') or line,
                                   data.get('tripNumber') or data.get('trainNumber') or num))
         route_var.set(f"{stop_name(data.get('origin'))}  →  {stop_name(data.get('destination'))}")
-        # pill di stato bianca con testo colorato
-        delay_var.set("IN ORARIO" if d <= 0 else f"RITARDO +{d} MIN")
+        # pill di stato bianca con testo colorato (segno sempre corretto)
+        delay_var.set("IN ORARIO" if d == 0
+                      else (f"RITARDO +{d} MIN" if d > 0 else f"ANTICIPO {d} MIN"))
         delay_lbl.configure(fg="#15803D" if d <= 0 else ("#B45309" if d <= 5 else "#DC2626"))
         _plat = str(data.get("platform") or "").strip()
         plat_var.set(f"BIN {_plat}" if _plat else "")
@@ -1338,20 +1481,19 @@ def open_timeline_gui(trip_id, country):
                 plat_pill.pack_forget()
         except Exception:
             pass
-        # progresso + frase di stato
+        # progresso + frase di stato (frazionario come la sheet Flutter)
         sts_all = [s for s in (data.get("stops") or data.get("stopovers") or [])
                    if isinstance(s, dict)]
         done = (at + 1) if at >= 0 else 0
-        pct = (done / max(n, 1)) if n else 0
         _src = state.get("delay_src", "")
         _suffix = f"  ·  RITARDO DA {_src.upper()}" if _src.startswith("bacheca") else ""
         prog_lbl_var.set(f"PERCORSO · {done} DI {n} FERMATE{_suffix}")
-        pct_var.set(f"{int(pct * 100)}%")
+        pct_var.set(f"{int(frac * 100)}%")
         try:
             bar.delete("all")
             bw = bar.winfo_width() or 400
-            if pct > 0:
-                bar.create_rectangle(0, 0, bw * pct, 8, fill=hexcol, outline="")
+            if frac > 0:
+                bar.create_rectangle(0, 0, bw * frac, 8, fill=hexcol, outline="")
         except Exception:
             pass
         if n and at == -1:
@@ -1364,7 +1506,15 @@ def open_timeline_gui(trip_id, country):
             cur = sts_all[at]
             cn = str(cur.get("station") or cur.get("stop") or cur.get("stationName")
                      or cur.get("name") or "?")
-            state_var.set(f"In viaggio · ultima fermata {cn}")
+            if 0 <= seg < n - 1:
+                nx = sts_all[seg + 1]
+                nn = str(nx.get("station") or nx.get("stop") or nx.get("stationName")
+                         or nx.get("name") or "?")
+                state_var.set(f"In viaggio · {cn} → {nn} · {int(seg_p * 100)}%")
+            elif pos.get("dwell"):
+                state_var.set(f"Fermo in stazione · {cn}")
+            else:
+                state_var.set(f"In viaggio · ultima fermata {cn}")
         else:
             state_var.set("")
         # prossima fermata
@@ -1431,6 +1581,780 @@ def open_timeline_gui(trip_id, country):
     tick_viewers()
     root.after(30000, auto)
     p_ok("Finestra timeline aperta con grafica moderna.")
+    root.mainloop()
+
+def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
+    # Finestra avanzata in CustomTkinter (+Pillow per i loghi): stesse logiche
+    # dati della versione tkinter (trip, ritardo da bacheche, posizione
+    # frazionaria), widget moderni con scroll nativo e angoli arrotondati.
+    import io
+    import tkinter as tk
+    import customtkinter as ctk
+    from tkinter import messagebox, simpledialog
+    from datetime import datetime, timezone, timedelta
+    from PIL import Image
+
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+
+    try:
+        trip = train_trip_data(trip_id, country, base=trip_base)
+    except Exception as e:
+        return p_err(f"Trip: {e}")
+    stops = [s for s in (trip.get("stops") or trip.get("stopovers") or [])
+             if isinstance(s, dict)]
+    if not stops:
+        return p_warn("Trip senza fermate.")
+
+    BG, SURFACE, CARD, CARD_HL = "#0A0C10", "#11151C", "#171D27", "#232C3B"
+    TXT, SUB, TERT = "#F2F5F9", "#8A94A6", "#4A5468"
+    TRACK = "#1B2230"
+    OK, WARN, ERR = "#22C55E", "#F59E0B", "#EF4444"
+    GUI_CAT = {"FR": "#E30613", "AV": "#E30613", "ICE": "#E30613", "TGV": "#E30613",
+               "IC": "#F59E0B", "EC": "#F59E0B", "EN": "#F59E0B",
+               "REG": "#22C55E", "R": "#22C55E", "RE": "#22C55E", "RB": "#22C55E",
+               "S": "#06B6D4", "BUS": "#EAB308", "TRAM": "#EC4899", "FAL": "#EC4899"}
+
+    def cat_hex(c):
+        return GUI_CAT.get((c or "").upper(), "#3498DB")
+
+    def delay_hex(d):
+        try:
+            n = int(d or 0)
+        except (TypeError, ValueError):
+            n = 0
+        return OK if n <= 0 else (WARN if n <= 5 else ERR)
+
+    def shade(hexcol, f):
+        hexcol = hexcol.lstrip("#")
+        r, g, b = (int(hexcol[i:i + 2], 16) for i in (0, 2, 4))
+        r, g, b = (max(0, min(255, int(c * f))) for c in (r, g, b))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def shift(dt, delay):
+        if dt is None or not delay:
+            return dt
+        try:
+            return dt + timedelta(minutes=int(delay))
+        except (TypeError, ValueError):
+            return dt
+
+    def stop_eff(s, delay):
+        a = parse_utc(s.get("estimatedArrival"))
+        if a is None:
+            a = shift(parse_utc(s.get("scheduledArrival")) or parse_utc(s.get("arrival")),
+                      delay)
+        d = parse_utc(s.get("estimatedDeparture"))
+        if d is None:
+            d = shift(parse_utc(s.get("departure")) or parse_utc(s.get("scheduledDeparture"))
+                      or parse_utc(s.get("time")), delay)
+        if a is None and d is not None:
+            a = d - timedelta(minutes=1)
+        if d is None and a is not None:
+            d = a + timedelta(minutes=1)
+        return a, d
+
+    def position(sts, train_delay=0):
+        now = datetime.now(timezone.utc)
+        eff = []
+        for s in sts:
+            eff.append(parse_utc(s.get("estimatedDeparture"))
+                       or shift(parse_utc(s.get("departure"))
+                                or parse_utc(s.get("scheduledDeparture"))
+                                or parse_utc(s.get("time")), train_delay)
+                       or parse_utc(s.get("estimatedArrival"))
+                       or shift(parse_utc(s.get("scheduledArrival"))
+                                or parse_utc(s.get("arrival")), train_delay))
+        at = -1
+        for i, t in enumerate(eff):
+            if t is not None and t <= now:
+                at = i
+        return at, now, eff
+
+    line = str(trip.get("line") or trip.get("category") or "")
+    num = str(trip.get("tripNumber") or trip.get("trainNumber") or "")
+    cat = train_category(line, trip.get("category"))
+    hexcol = cat_hex(cat)
+    train_key = f"{cat}|{num}|{trip.get('scheduledTime') or ''}"
+    client_id = f"cli-{os.getpid()}"
+    logos = fetch_train_logos()
+    png_url = logo_png_for(cat, logos)
+
+    root = ctk.CTk()
+    root.title(f"BC.Transporter – {train_label(line, num)}")
+    root.geometry("520x920")
+    root.minsize(460, 680)
+    root.configure(fg_color=BG)
+
+    FT_OVER = ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+    FT_TITLE = ctk.CTkFont(family="Segoe UI", size=28, weight="bold")
+    FT_ROUTE = ctk.CTkFont(family="Segoe UI", size=13)
+    FT_PILL = ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+    FT_SEC = ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+    FT_NAME = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
+    FT_SUB = ctk.CTkFont(family="Segoe UI", size=11)
+    FT_TIME = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
+    FT_BTN = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+
+    alive = {"on": True, "live": True}
+    state = {"trip": trip, "delay_src": ""}
+
+    def on_close():
+        alive["on"] = False
+        try:
+            post_json(f"{BASE}/api/train-presence/leave",
+                      {"clientId": client_id, "trainKey": train_key})
+        except Exception:
+            pass
+        root.destroy()
+    root.protocol("WM_DELETE_WINDOW", on_close)
+
+    # -- Header --
+    head = ctk.CTkFrame(root, fg_color=hexcol, corner_radius=0)
+    head.pack(fill="x")
+    hwrap = ctk.CTkFrame(head, fg_color="transparent")
+    hwrap.pack(fill="x", padx=22, pady=(22, 18))
+    hrow = ctk.CTkFrame(hwrap, fg_color="transparent")
+    hrow.pack(fill="x")
+
+    logo_tile = ctk.CTkFrame(hrow, fg_color="white", corner_radius=10)
+    logo_tile.pack(side="left")
+    logo_lbl = ctk.CTkLabel(logo_tile, text=cat or "—", font=ctk.CTkFont(
+        family="Segoe UI", size=17, weight="bold"),
+        text_color=hexcol, fg_color="transparent")
+    logo_lbl.pack(padx=12, pady=10)
+    if png_url:
+        try:
+            req = urllib.request.Request(png_url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as res:
+                raw = res.read()
+            pil = Image.open(io.BytesIO(raw)).convert("RGBA")
+            w, h = pil.size
+            sc = min(120 / w, 48 / h, 1.0)
+            nw, nh = max(1, int(w * sc)), max(1, int(h * sc))
+            img = ctk.CTkImage(pil.resize((nw, nh), Image.LANCZOS), size=(nw, nh))
+            logo_lbl.configure(image=img, text="")
+            logo_lbl.image = img
+        except Exception:
+            pass
+
+    hinfo = ctk.CTkFrame(hrow, fg_color="transparent")
+    hinfo.pack(side="left", padx=(14, 0), fill="x", expand=True)
+    over_var = ctk.StringVar(value=f"TRENO · {country}".strip())
+    ctk.CTkLabel(hinfo, textvariable=over_var, font=FT_OVER,
+                 text_color="white", fg_color="transparent").pack(anchor="w")
+    title_var = ctk.StringVar(value=train_label(line, num))
+    ctk.CTkLabel(hinfo, textvariable=title_var, font=FT_TITLE,
+                 text_color="white", fg_color="transparent").pack(anchor="w")
+    route_var = ctk.StringVar(value="")
+    ctk.CTkLabel(hinfo, textvariable=route_var, font=FT_ROUTE,
+                 text_color="#FFE9E9", fg_color="transparent").pack(anchor="w", pady=(3, 0))
+
+    chips = ctk.CTkFrame(hwrap, fg_color="transparent")
+    chips.pack(fill="x", pady=(14, 0))
+
+    def pill(parent, text="", textvariable=None, fg="#000000", tc="white"):
+        f = ctk.CTkFrame(parent, fg_color=fg, corner_radius=12)
+        ctk.CTkLabel(f, text=text, textvariable=textvariable, font=FT_PILL,
+                     text_color=tc, fg_color="transparent").pack(padx=12, pady=6)
+        return f
+
+    delay_var = ctk.StringVar(value="")
+    status_pill = ctk.CTkFrame(chips, fg_color="white", corner_radius=12)
+    status_pill.pack(side="left")
+    delay_lbl = ctk.CTkLabel(status_pill, textvariable=delay_var, font=FT_PILL,
+                             text_color="#15803D", fg_color="transparent")
+    delay_lbl.pack(padx=12, pady=6)
+
+    plat_var = ctk.StringVar(value="")
+    plat_pill = pill(chips, textvariable=plat_var, fg="#000000", tc="white")
+    plat_shown = {"on": False}
+
+    live_pill = pill(chips, text="● LIVE", fg="#000000", tc="#4ADE80")
+    live_pill.pack(side="left", padx=(8, 0))
+
+    viewers_var = ctk.StringVar(value="")
+    ctk.CTkLabel(chips, textvariable=viewers_var, font=FT_PILL,
+                 text_color="white", fg_color="transparent").pack(side="left", padx=(10, 0))
+
+    # -- Barra inferiore --
+    ctk.CTkFrame(root, fg_color="#232B38", height=1, corner_radius=0).pack(
+        side="bottom", fill="x")
+    upLbl_var = ctk.StringVar(value="")
+    live_var = ctk.StringVar(value="LIVE ON")
+    bottom = ctk.CTkFrame(root, fg_color=SURFACE, corner_radius=0)
+    bottom.pack(side="bottom", fill="x")
+    brow = ctk.CTkFrame(bottom, fg_color="transparent")
+    brow.pack(fill="x", padx=14, pady=12)
+    ctk.CTkButton(brow, text="Aggiorna", font=FT_BTN, fg_color=hexcol,
+                  hover_color=shade(hexcol, 0.85), text_color="white",
+                  corner_radius=10, height=38,
+                  command=lambda: refresh()).pack(side="left")
+
+    def toggle_live():
+        alive["live"] = not alive["live"]
+        live_var.set("LIVE ON" if alive["live"] else "LIVE OFF")
+    ctk.CTkButton(brow, textvariable=live_var, font=FT_BTN, fg_color=CARD,
+                  hover_color=CARD_HL, text_color=TXT, corner_radius=10,
+                  height=38, command=toggle_live).pack(side="left", padx=(8, 0))
+    ctk.CTkButton(brow, text="Chiudi", font=FT_BTN, fg_color=CARD,
+                  hover_color=CARD_HL, text_color=TXT, corner_radius=10,
+                  height=38, command=on_close).pack(side="right")
+    ctk.CTkLabel(brow, textvariable=upLbl_var, font=FT_SUB,
+                 text_color=SUB, fg_color="transparent").pack(side="right", padx=(0, 12))
+
+    # -- Area scrollabile --
+    body = ctk.CTkScrollableFrame(root, fg_color=BG, corner_radius=0)
+    body.pack(fill="both", expand=True)
+    content = ctk.CTkFrame(body, fg_color="transparent")
+    content.pack(fill="x")
+
+    def _fix_scroll():
+        # la scrollregion a volte non si aggiorna da sola: forziamola
+        try:
+            body._parent_canvas.configure(
+                scrollregion=body._parent_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _sync_pad(_e=None):
+        try:
+            w = body.winfo_width()
+            side = max(18, (w - 660) // 2)
+            content.pack_configure(padx=(side, side))
+        except Exception:
+            pass
+        root.after_idle(_fix_scroll)
+    body.bind("<Configure>", _sync_pad)
+
+    # -- Stato corsa --
+    prog = ctk.CTkFrame(content, fg_color=CARD, corner_radius=14)
+    prog.pack(fill="x", pady=(18, 0))
+    prog_in = ctk.CTkFrame(prog, fg_color="transparent")
+    prog_in.pack(fill="x", padx=16, pady=14)
+    prog_top = ctk.CTkFrame(prog_in, fg_color="transparent")
+    prog_top.pack(fill="x")
+    prog_lbl_var = ctk.StringVar(value="")
+    ctk.CTkLabel(prog_top, textvariable=prog_lbl_var, font=FT_SEC,
+                 text_color=SUB, fg_color="transparent").pack(side="left")
+    pct_var = ctk.StringVar(value="")
+    ctk.CTkLabel(prog_top, textvariable=pct_var,
+                 font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                 text_color=TXT, fg_color="transparent").pack(side="right")
+    bar = ctk.CTkProgressBar(prog_in, progress_color=hexcol, fg_color=TRACK,
+                             height=8, corner_radius=4)
+    bar.pack(fill="x", pady=(10, 0))
+    bar.set(0)
+    state_var = ctk.StringVar(value="")
+    ctk.CTkLabel(prog_in, textvariable=state_var,
+                 font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                 text_color=TXT, fg_color="transparent",
+                 justify="left").pack(anchor="w", pady=(10, 0))
+
+    # -- Prossima fermata --
+    nxt = ctk.CTkFrame(content, fg_color=CARD, corner_radius=14)
+    nxt.pack(fill="x", pady=(12, 0))
+    ctk.CTkFrame(nxt, fg_color=hexcol, width=4, corner_radius=0).pack(
+        side="left", fill="y")
+    nxt_in = ctk.CTkFrame(nxt, fg_color="transparent")
+    nxt_in.pack(side="left", fill="both", expand=True, padx=14, pady=12)
+    ctk.CTkLabel(nxt_in, text="PROSSIMA FERMATA", font=FT_SEC,
+                 text_color=hexcol, fg_color="transparent").pack(anchor="w")
+    next_var = ctk.StringVar(value="")
+    ctk.CTkLabel(nxt_in, textvariable=next_var,
+                 font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+                 text_color=TXT, fg_color="transparent",
+                 justify="left").pack(anchor="w", pady=(3, 0))
+    next_sub_var = ctk.StringVar(value="")
+    ctk.CTkLabel(nxt_in, textvariable=next_sub_var, font=FT_SUB,
+                 text_color=SUB, fg_color="transparent",
+                 justify="left").pack(anchor="w", pady=(2, 0))
+
+    # -- Azioni --
+    ctk.CTkLabel(content, text="AZIONI RAPIDE", font=FT_SEC, text_color=SUB,
+                 fg_color="transparent").pack(anchor="w", pady=(18, 8))
+    grid = ctk.CTkFrame(content, fg_color="transparent")
+    grid.pack(fill="x")
+    grid.columnconfigure(0, weight=1)
+    grid.columnconfigure(1, weight=1)
+    match_var = ctk.StringVar(value="")
+    stats_box = ctk.CTkFrame(content, fg_color=CARD, corner_radius=14)
+
+    def toast(msg, bad=False):
+        (messagebox.showwarning if bad else messagebox.showinfo)("BC.Transporter", msg)
+
+    def do_stats():
+        try:
+            d = get_json(f"{BASE}/api/stats/train/{urllib.parse.quote(cat)}/"
+                         f"{urllib.parse.quote(num)}")
+        except Exception as e:
+            return toast(f"Statistiche non disponibili: {e}", bad=True)
+        rep = (d.get("data") if isinstance(d, dict) else None) or d or {}
+        m = rep.get("metrics") if isinstance(rep, dict) else None or {}
+        ins = rep.get("insights") if isinstance(rep, dict) else None or {}
+        for w in stats_box.winfo_children():
+            w.destroy()
+        box = ctk.CTkFrame(stats_box, fg_color="transparent")
+        box.pack(fill="x", padx=14, pady=12)
+        ctk.CTkLabel(box, text="STATISTICHE TRENO", font=FT_SEC,
+                     text_color=SUB, fg_color="transparent").pack(anchor="w", pady=(0, 6))
+        for k, v in [("Affidabilità", str(m.get("reliabilityScore", "—"))),
+                     ("Trend", str(m.get("behaviorTrend", "—"))),
+                     ("Ritardo medio", f"{m.get('averageNetDelayChangeMinutes', '—')} min"),
+                     ("Cancellazioni", f"{m.get('cancellationRatePercentage', '—')}%"),
+                     ("Viaggi analizzati", str(m.get("totalTripsAnalyzed", "—"))),
+                     ("Giorno peggiore", str(ins.get("worstDayOfWeek", "—"))),
+                     ("Stazione critica", str(ins.get("criticalBottleneckStation", "—")))]:
+            r = ctk.CTkFrame(box, fg_color="transparent")
+            r.pack(fill="x", pady=2)
+            ctk.CTkLabel(r, text=k, font=FT_SUB, text_color=SUB,
+                         fg_color="transparent").pack(side="left")
+            ctk.CTkLabel(r, text=v, font=FT_PILL, text_color=TXT,
+                         fg_color="transparent").pack(side="right")
+        stats_box.pack(fill="x", pady=(12, 0))
+        _sync_pad()
+
+    def do_map():
+        try:
+            d = get_json(f"{BASE}/api/track-trip/{urllib.parse.quote(trip_id)}")
+        except Exception as e:
+            return toast(f"Mappa non disponibile: {e}", bad=True)
+        dd = (d.get("data") if isinstance(d, dict) else None) or d or {}
+        pos = dd.get("trainPosition") if isinstance(dd, dict) else None
+        msg = f"Fermate tracciate: {len(dd.get('stops', []) if isinstance(dd, dict) else [])}"
+        if isinstance(pos, dict):
+            msg += f"\nPosizione: {pos.get('lat')}, {pos.get('lng')}"
+        toast(msg)
+
+    def do_share():
+        try:
+            url = sheet_share_link(trip_id, country, state["trip"])
+        except Exception as e:
+            return toast(f"Condivisione fallita: {e}", bad=True)
+        if not url:
+            return toast("Condivisione fallita", bad=True)
+        root.clipboard_clear()
+        root.clipboard_append(url)
+        toast(f"Link copiato negli appunti:\n{url}")
+
+    def do_social():
+        nick = simpledialog.askstring("Social", "Nickname:", parent=root)
+        if not nick:
+            return
+        try:
+            res = post_json(f"{BASE}/api/social/publish",
+                            {"train_key": train_key,
+                             "train": {"category": cat, "trainNumber": num,
+                                       "origin": stop_name(state["trip"].get("origin")),
+                                       "destination": stop_name(state["trip"].get("destination")),
+                                       "country": country}, "nick": nick})
+        except Exception as e:
+            return toast(f"Social: {e}", bad=True)
+        toast(f"Pubblicato: {res}")
+
+    def do_save():
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        out = cache_path("train", trip_id)
+        okw = save_json_file(out, state["trip"])
+        toast(f"Salvato offline:\n{out}" if okw else "Salvataggio fallito", bad=not okw)
+
+    def do_fav():
+        fav_add("train", {"number": num,
+                          "origin": stop_name(state["trip"].get("origin")),
+                          "destination": stop_name(state["trip"].get("destination")),
+                          "name": f"Treno {num}",
+                          "routeId": trip_id, "provider": country})
+        toast("Aggiunto ai preferiti")
+
+    def do_alerts():
+        msgs = collect_messages(state["trip"])
+        if not msgs:
+            return toast("Nessun avviso per questo treno.")
+        win = ctk.CTkToplevel(root)
+        win.title(f"Avvisi ({len(msgs)})")
+        win.geometry("480x400")
+        txt = ctk.CTkTextbox(win, font=FT_SUB, fg_color=CARD, text_color=TXT,
+                             corner_radius=10)
+        txt.pack(fill="both", expand=True, padx=12, pady=12)
+        for m in msgs:
+            txt.insert("end", f"• {m.get('text') or m}\n\n")
+        txt.configure(state="disabled")
+
+    def do_match():
+        sts = [s for s in (state["trip"].get("stops") or []) if isinstance(s, dict)]
+        payload = [{"stationName": s.get("station") or s.get("stop") or s.get("name"),
+                    "arrival": str(s.get("arrival") or ""),
+                    "departure": str(s.get("departure") or ""),
+                    "platform": s.get("platform"), "country": country,
+                    "cancelled": bool(s.get("cancelled"))} for s in sts]
+        try:
+            res = post_json(f"{BASE}/api/trains/match",
+                            {"tripId": trip_id, "country": country, "stops": payload},
+                            timeout=50)
+        except Exception as e:
+            return toast(f"Match: {e}", bad=True)
+        d = res.get("data") if isinstance(res, dict) else None
+        ms = d.get("matches", []) if isinstance(d, dict) else []
+        okm = bool(isinstance(d, dict) and d.get("isMatched") and any(
+            isinstance(x, dict) and x.get("matched") for x in ms))
+        det = ", ".join(str((x if isinstance(x, dict) else {}).get("country", "?"))
+                        for x in ms[:5])
+        match_var.set(("✓ match: " + det) if okm else "nessun match")
+        toast(("Match trovato: " + det) if okm else "Nessun match multi-paese.")
+
+    for i, (label, fn) in enumerate([("Statistiche", do_stats), ("Mappa", do_map),
+                                     ("Condividi", do_share), ("Social", do_social),
+                                     ("Salva", do_save), ("Avvisi", do_alerts),
+                                     ("Preferito", do_fav), ("Match", do_match)]):
+        ctk.CTkButton(grid, text=label, font=FT_BTN, fg_color=CARD,
+                      hover_color=CARD_HL, text_color=TXT, corner_radius=10,
+                      height=42, command=fn).grid(row=i // 2, column=i % 2,
+                                                 padx=4, pady=4, sticky="ew")
+    ctk.CTkLabel(grid, textvariable=match_var, font=FT_PILL, text_color=WARN,
+                 fg_color="transparent").grid(row=4, column=0, columnspan=2,
+                                             sticky="w", pady=(4, 0))
+
+    # -- Timeline --
+    tl_head = ctk.CTkFrame(content, fg_color="transparent")
+    tl_head.pack(fill="x", pady=(18, 8))
+    ctk.CTkLabel(tl_head, text="FERMATE", font=FT_SEC, text_color=SUB,
+                 fg_color="transparent").pack(side="left")
+    tl_count_var = ctk.StringVar(value="")
+    ctk.CTkLabel(tl_head, textvariable=tl_count_var, font=FT_SUB,
+                 text_color=TERT, fg_color="transparent").pack(side="left", padx=(8, 0))
+
+    tl = ctk.CTkFrame(content, fg_color=CARD, corner_radius=14)
+    tl.pack(fill="x")
+
+    ROW_H = 64
+
+    def draw(data, train_delay=0):
+        sts = [s for s in (data.get("stops") or data.get("stopovers") or [])
+               if isinstance(s, dict)]
+        for w in tl.winfo_children():
+            w.destroy()
+        if not sts:
+            ctk.CTkLabel(tl, text="Nessuna fermata.", font=FT_SUB,
+                         text_color=SUB, fg_color="transparent").pack(pady=12)
+            return 0, 0, {"frac": 0.0, "seg": -1, "seg_p": 0.0, "dwell": False}
+        at, now, eff = position(sts, train_delay)
+        n = len(sts)
+        tl_count_var.set(f"{n} fermate")
+        arrs, deps = [], []
+        for s in sts:
+            a, dpt = stop_eff(s, train_delay)
+            arrs.append(a)
+            deps.append(dpt)
+        seg, seg_p, dwell = -1, 0.0, False
+        if 0 <= at < n - 1:
+            a0, d0, a1 = arrs[at], deps[at], arrs[at + 1]
+            if a0 is not None and d0 is not None and a0 <= now <= d0:
+                dwell = True
+            elif (d0 is not None and a1 is not None and a1 > d0
+                    and d0 <= now < a1):
+                total = (a1 - d0).total_seconds()
+                seg = at
+                seg_p = min(1.0, max(0.0, (now - d0).total_seconds() / total)) if total > 0 else 1.0
+        if n <= 1:
+            frac = 1.0 if at >= 0 else 0.0
+        elif at == -1:
+            frac = 0.0
+        elif at >= n - 1:
+            frac = 1.0
+        elif dwell:
+            frac = at / (n - 1)
+        elif seg >= 0:
+            frac = (seg + seg_p) / (n - 1)
+        else:
+            frac = at / (n - 1)
+        pos = {"frac": frac, "seg": seg, "seg_p": seg_p, "dwell": dwell}
+        no_clock = 0 <= at < n and (arrs[at] is None or deps[at] is None)
+
+        for i, s in enumerate(sts):
+            name = str(s.get("station") or s.get("stop") or s.get("stationName")
+                       or s.get("name") or "?")
+            arr = fmt_time(s.get("scheduledArrival") or s.get("arrival"))
+            dep = fmt_time(s.get("scheduledDeparture") or s.get("departure") or s.get("time"))
+            plat = str(s.get("platform") or s.get("actualPlatform") or "")
+            _own = next((s[k] for k in ("delay", "arrivalDelay", "departureDelay")
+                         if s.get(k) is not None), None)
+            if _own is None:
+                dl = train_delay
+            else:
+                try:
+                    dl = int(_own)
+                except (TypeError, ValueError):
+                    dl = train_delay
+            cancelled = bool(s.get("cancelled") or s.get("canceled") or s.get("isCancelled"))
+            passed = at >= i and at != -1
+            if no_clock:
+                is_cur = (at == i and not cancelled and eff[at] is not None
+                          and (now - eff[at]).total_seconds() <= 180)
+                in_travel = (at == i and not cancelled and eff[at] is not None
+                             and (now - eff[at]).total_seconds() > 180)
+            else:
+                is_cur = dwell and at == i and not cancelled
+                in_travel = seg == i and not cancelled
+            is_last = i == n - 1
+            marker_p = seg_p if (seg == i and not is_last) else None
+
+            if cancelled:
+                st, st_fg = "SOPPRESSA", ERR
+            elif at == -1 and i == 0:
+                st, st_fg = "NON PARTITO", OK
+            elif at == n - 1 and is_last:
+                st, st_fg = "ARRIVATO", OK
+            elif is_cur:
+                st, st_fg = "QUI", OK
+            elif in_travel:
+                st, st_fg = "IN VIAGGIO", OK
+            else:
+                st, st_fg = "", SUB
+
+            row = ctk.CTkFrame(tl, fg_color="transparent")
+            row.pack(fill="x")
+
+            # height esplicita: CTkFrame di default chiede 200px e con
+            # propagate off la riga diventerebbe altissima
+            tcol = ctk.CTkFrame(row, fg_color="transparent", width=76, height=10)
+            tcol.pack(side="left", fill="y")
+            tcol.pack_propagate(False)
+            if i == 0:
+                ctk.CTkLabel(tcol, text=dep, font=FT_TIME, text_color=TXT,
+                             fg_color="transparent").pack(anchor="e", pady=(14, 0))
+                ctk.CTkLabel(tcol, text="partenza", font=FT_SUB, text_color=TERT,
+                             fg_color="transparent").pack(anchor="e")
+            elif is_last:
+                ctk.CTkLabel(tcol, text=arr, font=FT_TIME, text_color=TXT,
+                             fg_color="transparent").pack(anchor="e", pady=(14, 0))
+                ctk.CTkLabel(tcol, text="arrivo", font=FT_SUB, text_color=TERT,
+                             fg_color="transparent").pack(anchor="e")
+            else:
+                ctk.CTkLabel(tcol, text=arr, font=FT_TIME, text_color=TXT,
+                             fg_color="transparent").pack(anchor="e", pady=(10, 0))
+                ctk.CTkLabel(tcol, text=dep, font=FT_SUB, text_color=SUB,
+                             fg_color="transparent").pack(anchor="e")
+
+            rail = tk.Canvas(row, width=26, height=ROW_H, bg=CARD,
+                             highlightthickness=0)
+            rail.pack(side="left", fill="y", padx=(10, 6))
+
+            def _paint_rail(_e=None, _r=rail, _i=i, _last=is_last,
+                            _canc=cancelled, _cur=is_cur, _tr=in_travel,
+                            _pass=passed, _at=at, _mp=marker_p):
+                try:
+                    h = _r.winfo_height()
+                except Exception:
+                    h = ROW_H
+                if h < 24:
+                    h = ROW_H
+                _r.delete("all")
+                mid = h // 2
+                if _i != 0:
+                    _r.create_line(13, 0, 13, mid,
+                                   fill=hexcol if _at != -1 and _at >= _i else TRACK,
+                                   width=3)
+                if not _last:
+                    if _mp is not None:
+                        my = mid + (h - mid) * min(1.0, max(0.0, _mp))
+                        _r.create_line(13, mid, 13, my, fill=hexcol, width=3)
+                        _r.create_line(13, my, 13, h, fill=TRACK, width=3)
+                    else:
+                        _r.create_line(13, mid, 13, h,
+                                       fill=hexcol if _at > _i else TRACK, width=3)
+                if _canc:
+                    _r.create_text(13, mid, text="×",
+                                   font=("Segoe UI", 14, "bold"), fill=ERR)
+                elif _cur or _tr or (_at == _i and not _canc):
+                    _r.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
+                                   outline=hexcol, width=2)
+                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                   fill=hexcol, outline=hexcol)
+                elif _pass:
+                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                   fill=hexcol, outline=hexcol)
+                else:
+                    _r.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                   fill=CARD, outline="#5B6675", width=2)
+                if _mp is not None and not _last and not _canc:
+                    my = mid + (h - mid) * min(1.0, max(0.0, _mp))
+                    _r.create_oval(13 - 7, my - 7, 13 + 7, my + 7,
+                                   fill=hexcol, outline="white", width=2)
+
+            rail.bind("<Configure>", _paint_rail)
+            _paint_rail()
+
+            info = ctk.CTkFrame(row, fg_color="transparent")
+            info.pack(side="left", fill="both", expand=True, pady=10)
+            top = ctk.CTkFrame(info, fg_color="transparent")
+            top.pack(fill="x")
+            name_fg = ERR if cancelled else (SUB if (passed and not is_cur and not in_travel) else TXT)
+            ctk.CTkLabel(top, text=name, font=FT_NAME, text_color=name_fg,
+                         fg_color="transparent").pack(side="left")
+            if st:
+                ctk.CTkLabel(top, text=st, font=FT_SEC, text_color=st_fg,
+                             fg_color="transparent").pack(side="right")
+            sub = ctk.CTkFrame(info, fg_color="transparent")
+            sub.pack(fill="x", pady=(3, 0))
+            bits = []
+            if arr != dep and i != 0 and not is_last:
+                bits.append(f"{arr} → {dep}")
+            elif is_last:
+                bits.append(f"arrivo {arr}")
+            elif i == 0:
+                bits.append(f"partenza {dep}")
+            if plat:
+                bits.append(f"bin {plat}")
+            ctk.CTkLabel(sub, text="  •  ".join(bits), font=FT_SUB,
+                         text_color=SUB, fg_color="transparent").pack(side="left")
+            if dl and not cancelled:
+                ctk.CTkLabel(sub, text=f"{dl:+d} min", font=FT_PILL,
+                             text_color=delay_hex(dl),
+                             fg_color="transparent").pack(side="right")
+        return at, n, pos
+
+    ctk.CTkFrame(content, fg_color=BG, height=24).pack()
+
+    def refresh():
+        try:
+            data = train_trip_data(trip_id, country, base=trip_base)
+        except Exception:
+            return
+        state["trip"] = data
+        try:
+            _td = data.get("delay", data.get("delayMinutes"))
+            trip_delay = None if _td is None else int(_td)
+        except (TypeError, ValueError):
+            trip_delay = None
+        _stops = [s for s in (data.get("stops") or data.get("stopovers") or [])
+                  if isinstance(s, dict)]
+        _dest = stop_name(data.get("destination"))
+        fb_delay, fb_station = refresh_delay_from_upcoming_stations(
+            _stops, trip_id=trip_id, train_number=num, destination=_dest,
+            country=country, current_delay=trip_delay,
+            board_base=board_base)
+        if fb_delay is not None:
+            d = fb_delay
+            state["delay_src"] = f"bacheca {fb_station}" if fb_station else "bacheca"
+        elif trip_delay is not None:
+            d = trip_delay
+            state["delay_src"] = "trip"
+        else:
+            d = 0
+            state["delay_src"] = ""
+        at, n, pos = draw(data, d)
+        frac = max(0.0, min(1.0, pos.get("frac", 0.0)))
+        seg, seg_p = pos.get("seg", -1), pos.get("seg_p", 0.0)
+        title_var.set(train_label(data.get('line') or data.get('category') or line,
+                                  data.get('tripNumber') or data.get('trainNumber') or num))
+        route_var.set(f"{stop_name(data.get('origin'))}  →  {stop_name(data.get('destination'))}")
+        delay_var.set("IN ORARIO" if d == 0
+                      else (f"RITARDO +{d} MIN" if d > 0 else f"ANTICIPO {d} MIN"))
+        delay_lbl.configure(text_color="#15803D" if d <= 0 else ("#B45309" if d <= 5 else "#DC2626"))
+        _plat = str(data.get("platform") or "").strip()
+        plat_var.set(f"BIN {_plat}" if _plat else "")
+        try:
+            if _plat and not plat_shown["on"]:
+                plat_pill.pack(side="left", padx=(8, 0))
+                plat_shown["on"] = True
+            elif not _plat and plat_shown["on"]:
+                plat_pill.pack_forget()
+                plat_shown["on"] = False
+        except Exception:
+            pass
+        sts_all = [s for s in (data.get("stops") or data.get("stopovers") or [])
+                   if isinstance(s, dict)]
+        done = (at + 1) if at >= 0 else 0
+        _src = state.get("delay_src", "")
+        _suffix = f"  ·  RITARDO DA {_src.upper()}" if _src.startswith("bacheca") else ""
+        prog_lbl_var.set(f"PERCORSO · {done} DI {n} FERMATE{_suffix}")
+        pct_var.set(f"{int(frac * 100)}%")
+        try:
+            bar.set(max(0.0, min(1.0, frac)))
+        except Exception:
+            pass
+        if n and at == -1:
+            t0 = fmt_time(sts_all[0].get("scheduledDeparture") or sts_all[0].get("departure")
+                          or sts_all[0].get("time")) if sts_all else "—"
+            state_var.set(f"Treno fermo in stazione · partenza {t0}")
+        elif n and at == n - 1:
+            state_var.set("Corsa terminata · treno arrivato a destinazione")
+        elif n and 0 <= at < n:
+            cur = sts_all[at]
+            cn = str(cur.get("station") or cur.get("stop") or cur.get("stationName")
+                     or cur.get("name") or "?")
+            if 0 <= seg < n - 1:
+                nx = sts_all[seg + 1]
+                nn = str(nx.get("station") or nx.get("stop") or nx.get("stationName")
+                         or nx.get("name") or "?")
+                state_var.set(f"In viaggio · {cn} → {nn} · {int(seg_p * 100)}%")
+            elif pos.get("dwell"):
+                state_var.set(f"Fermo in stazione · {cn}")
+            else:
+                state_var.set(f"In viaggio · ultima fermata {cn}")
+        else:
+            state_var.set("")
+        if n and 0 <= at + 1 < n:
+            nx = sts_all[at + 1]
+            nm = str(nx.get("station") or nx.get("stop") or nx.get("stationName")
+                     or nx.get("name") or "?")
+            nt = fmt_time(nx.get("scheduledArrival") or nx.get("arrival")
+                          or nx.get("scheduledDeparture") or nx.get("departure"))
+            pl = str(nx.get("platform") or "")
+            next_var.set(nm)
+            bits = []
+            if nt and nt != "—":
+                bits.append(f"ore {nt}")
+            if pl:
+                bits.append(f"binario {pl}")
+            next_sub_var.set("  •  ".join(bits))
+        elif n and at == n - 1:
+            next_var.set("Destinazione raggiunta")
+            next_sub_var.set("")
+        else:
+            next_var.set("—")
+            next_sub_var.set("")
+        upLbl_var.set(f"Aggiornato {datetime.now().strftime('%H:%M:%S')}")
+        _sync_pad()
+        root.after_idle(_fix_scroll)
+
+    def tick_viewers():
+        if not alive["on"]:
+            return
+        try:
+            if root.winfo_exists():
+                res = post_json(f"{BASE}/api/train-presence/heartbeat",
+                                {"clientId": client_id, "trainKey": train_key,
+                                 "screen": "national",
+                                 "train": {"category": cat, "trainNumber": num,
+                                           "origin": stop_name(state["trip"].get("origin")),
+                                           "destination": stop_name(state["trip"].get("destination")),
+                                           "country": country, "tripId": trip_id}})
+                v = res.get("viewers") if isinstance(res, dict) else None
+                viewers_var.set(f"● {v} online" if isinstance(v, int) and v > 0 else "")
+        except Exception:
+            pass
+        if alive["on"]:
+            root.after(15000, tick_viewers)
+
+    def auto():
+        if not alive["on"]:
+            return
+        try:
+            if root.winfo_exists() and alive["live"]:
+                refresh()
+        except Exception:
+            pass
+        if alive["on"]:
+            root.after(30000, auto)
+
+    root.minsize(460, 680)
+
+    refresh()
+    root.after_idle(_sync_pad)
+    tick_viewers()
+    root.after(30000, auto)
+    p_ok("Finestra timeline aperta (CustomTkinter).")
     root.mainloop()
 
 def train_trip(trip_id, country):
@@ -2046,39 +2970,59 @@ def reg_providers(country):
     provs = (data.get("providers") if isinstance(data, dict) else None) or as_list(data)
     for p in provs:
         if isinstance(p, dict):
-            print(f"  {ok(str(p.get('name') or p.get('key') or '?'))}  {dim(str(p.get('apiPrefix') or ''))}")
-    p_dim(f"Totale: {len(provs)}")
+            print(f"  {ok(str(p.get('name') or p.get('key') or '?')).ljust(20)}  "
+                  f"{dim(str(p.get('api_prefix') or p.get('apiPrefix') or ''))}")
+    p_dim(f"Totale: {len(provs)} — usa il nome (es. trenord) con --stazioni/--partenze")
+    return provs
 
 def reg_base(country, prefix):
-    return f"{BASE}/api/{prefix.strip('/')}"
+    # Accetta nome provider (trenord) o prefisso completo (it/trains/trenord):
+    # GET /api/{country}/trains/{provider}/... (come regional_provider_screen)
+    p = (prefix or "").strip().strip("/")
+    parts = [x for x in p.split("/") if x]
+    if len(parts) >= 3 and parts[-2] == "trains":
+        return f"{BASE}/api/{'/'.join(parts)}"
+    provider = parts[-1] if parts else ""
+    return f"{BASE}/api/{str(country or 'it').lower()}/trains/{provider}"
 
-def reg_stations(country, prefix, q=""):
+def fetch_reg_stations(country, prefix, q=""):
     base = reg_base(country, prefix)
     url = f"{base}/stations?limit=100" if not q else f"{base}/stations?query={urllib.parse.quote(q)}&limit=50"
+    return url, base, as_list(get_json(url))
+
+def fetch_reg_board(country, prefix, station_id, arrivi):
+    base = reg_base(country, prefix)
+    ep = "arrivals" if arrivi else "departures"
+    url = f"{base}/{ep}?stationId={urllib.parse.quote(station_id)}"
+    rows = []
+    for raw in as_list(get_json(url)):
+        e = _unwrap_board(raw if isinstance(raw, dict) else {})
+        if e:
+            rows.append(e)
+    return url, base, rows
+
+def reg_stations(country, prefix, q=""):
     p_title(f"🏳️ Stazioni regionali {prefix} · '{q}'")
-    p_dim(f"GET {url}")
     try:
-        data = get_json(url)
+        url, _, lst = fetch_reg_stations(country, prefix, q)
     except Exception as e:
         return p_err(f"Errore: {e}")
-    for s in as_list(data)[:20]:
+    p_dim(f"GET {url}")
+    for s in lst[:20]:
         if isinstance(s, dict):
             print(f"  {ok(str(s.get('name') or s.get('stationName') or '?'))}  "
                   f"{dim('id=' + str(s.get('id') or s.get('stationId') or '?'))}")
+    return lst
 
 def reg_board(country, prefix, station_id, arrivi):
-    base = reg_base(country, prefix)
     ep = "arrivals" if arrivi else "departures"
-    p_title(f"🏳️ {ep} regionali · {station_id}")
+    p_title(f"🏳️ {'Arrivi' if arrivi else 'Partenze'} regionali · {station_id}")
     try:
-        lst = as_list(get_json(f"{base}/{ep}?stationId={urllib.parse.quote(station_id)}"))
+        url, _, lst = fetch_reg_board(country, prefix, station_id, arrivi)
     except Exception as e:
         return p_err(f"Errore: {e}")
-    for raw in lst[:20]:
-        e = raw if isinstance(raw, dict) else {}
-        print(f"  {bold(fmt_time(e.get('scheduledTime') or e.get('time')).ljust(7))} "
-              f"{ok(str(e.get('tripNumber') or e.get('trainNumber') or '?').ljust(10))} "
-              f"{short((e.get('origin') if arrivi else e.get('destination')) or e.get('stationName'), 34)}")
+    p_dim(f"GET {url}")
+    return print_board_table(lst, arrivi) or []
 
 def reg_news(country, prefix):
     p_title(f"📰 News {prefix}")
@@ -2840,6 +3784,39 @@ def offline_size():
             total += os.path.getsize(os.path.join(root, n))
     p_info(f"Dimensione cache: {total // 1024} KB")
 
+# -- STATO LOCALE (comfort: ricorda paese, recenti, ultimo tabellone) --------
+STATE_FILE = os.path.join(HOME, ".bc_cli_state.json")
+
+def app_state():
+    return load_json_file(STATE_FILE, {})
+
+def save_state(patch):
+    st = app_state()
+    if isinstance(patch, dict):
+        st.update(patch)
+    save_json_file(STATE_FILE, st)
+    return st
+
+def remember_country(c):
+    if c:
+        save_state({"country": str(c).upper()})
+
+def last_country():
+    return str(app_state().get("country") or "IT").upper()
+
+def push_recent(kind, entry, limit=8):
+    st = app_state()
+    lst = [e for e in (st.get(kind) or []) if isinstance(e, dict)]
+    key = entry.get("sid") or entry.get("stop_id") or entry.get("name")
+    lst = [e for e in lst
+           if (e.get("sid") or e.get("stop_id") or e.get("name")) != key]
+    lst.insert(0, entry)
+    st[kind] = lst[:limit]
+    save_json_file(STATE_FILE, st)
+
+def get_recent(kind):
+    return [e for e in (app_state().get(kind) or []) if isinstance(e, dict)]
+
 # -- MENU INTERATTIVI ---------------------------------------------------------
 def banner():
     if USE_COLOR:
@@ -2852,24 +3829,34 @@ def banner():
     print(f"  {dim('Bus · Treni · Aerei nel terminale — stessi endpoint dell’app Flutter')}")
 
 def pick_country():
+    # Veloce: invio = ultimo usato, codice diretto, ? = lista completa
+    last = last_country()
     data = load_json_file(os.path.join(HOME, ".bc_cli_countries.json"), {})
     entries = data.get("entries", [])
     if not entries:
         entries = train_countries() or []
     if not entries:
-        return (ask("Paese [IT]: ") or "IT").upper()
-    print(f"\n  {dim('Paesi (numero → codice):')}")
-    for e in entries:
-        mark = " ←" if e["code"].upper() == "IT" or e["code"] == "it" else ""
-        print(f"  {c_train('[' + str(e['n']) + ']')} {e['code'].ljust(18)} {dim(e['name'])}{mark}")
-    sel = ask("Numero paese [invio = IT]: ")
-    if not sel:
-        return "IT"
+        c = (ask(f"Paese [{last}]: ") or last).upper()
+        remember_country(c)
+        return c
+
+    def show_list():
+        print(f"\n  {dim('Paesi (numero → codice):')}")
+        for e in entries:
+            mark = " ←" if str(e["code"]).upper() == last else ""
+            print(f"  {c_train('[' + str(e['n']) + ']')} {e['code'].ljust(18)} {dim(e['name'])}{mark}")
+
+    sel = (ask(f"Paese [{last}] (? = lista): ").strip() or last)
+    if sel == "?":
+        show_list()
+        sel = (ask(f"Numero paese [invio = {last}]: ").strip() or last)
     code = country_from_number(sel)
     if code:
-        p_ok(f"Paese: {code}")
+        remember_country(code)
         return code
-    return sel.upper()
+    c = sel.upper()
+    remember_country(c)
+    return c
 
 COMMANDS = ("treni", "bus", "voli", "flixbus", "regionali", "strade",
             "meteo", "social", "auth", "preferiti", "config", "offline")
@@ -2904,13 +3891,80 @@ def simple_mode():
     if transport is None:
         return
     if transport == "treni":
-        simple_train()
+        parte = ask("Tasto 1) Nazionale  2) Regionale  [1]: ").strip() or "1"
+        if parte == "2":
+            simple_regional()
+        else:
+            simple_train()
     elif transport == "bus":
         simple_bus()
     elif transport == "voli":
         simple_fly()
     elif transport == "flixbus":
         simple_flix()
+
+def simple_regional():
+    p_title("🏳️ Regionali (0 = menu)")
+    country = pick_country()
+    provider = pick_regional_provider(country)
+    if not provider:
+        return
+    p_ok(f"Provider: {provider}")
+    while True:
+        rec = [e for e in get_recent("recent_regstations")
+               if e.get("provider") == provider][:5]
+        if rec:
+            print(f"\n  {dim('Recenti:')}")
+            for i, e in enumerate(rec, 1):
+                print(f"  {ok(f'[R{i}]')} {e.get('name')}  {dim(str(e.get('sid')))}")
+        q = ask("\nNome stazione, R-numero (0 = menu): ")
+        if not q or q.strip() == "0":
+            return
+        q = q.strip()
+        if q.lower().startswith("r") and q[1:].isdigit():
+            idx = int(q[1:]) - 1
+            if 0 <= idx < len(rec):
+                e = rec[idx]
+                m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+                r = train_board_loop(str(e.get("sid")), country, m == "2",
+                                     str(e.get("name") or "?"), provider=provider)
+                if r is None:
+                    return
+                if r.get("provider") and r["provider"] != provider:
+                    provider = r["provider"]
+                    p_ok(f"Provider: {provider}")
+                continue
+            p_warn("Recente non valido.")
+            continue
+        try:
+            _, _, lst = fetch_reg_stations(country, provider, q)
+        except Exception as e:
+            p_err(f"Errore ricerca: {e}")
+            continue
+        if not lst:
+            p_warn("Nessuna stazione trovata, riprova.")
+            continue
+        for i, e in enumerate(lst[:10], 1):
+            print(f"  {ok(f'[{i}]')} {e.get('name') or e.get('stationName') or '?'}")
+        s = (ask("Numero stazione (0 = nuova ricerca): ").strip() or "0")
+        if s == "0":
+            continue
+        try:
+            choice = lst[int(s) - 1] if 1 <= int(s) <= min(len(lst), 10) else None
+        except ValueError:
+            choice = None
+        if not isinstance(choice, dict):
+            p_warn("Numero non valido.")
+            continue
+        sid = str(choice.get("id") or choice.get("stationId") or "")
+        name = str(choice.get("name") or choice.get("stationName") or "?")
+        m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+        r = train_board_loop(sid, country, m == "2", name, provider=provider)
+        if r is None:
+            return
+        if r.get("provider") and r["provider"] != provider:
+            provider = r["provider"]
+            p_ok(f"Provider: {provider}")
 
 def pick_board_row(board):
     if not board:
@@ -2926,72 +3980,166 @@ def pick_board_row(board):
         return None
     return row
 
+def station_search_pick(q, country):
+    """Cerca stazioni e fa scegliere: ritorna (sid, nome) o None."""
+    try:
+        _, lst = fetch_stations(q, country)
+    except Exception as e:
+        p_err(f"Errore ricerca: {e}")
+        return None
+    if not lst:
+        p_warn("Nessuna stazione trovata, riprova.")
+        return None
+    p_title(f'🚂 Stazioni · "{q}" [{country}]')
+    for i, e in enumerate(lst, 1):
+        e = e if isinstance(e, dict) else {}
+        name = e.get("name") or e.get("stationName") or "?"
+        print(f"  {c_train(f'[{i}]')} {bold(name)}")
+    s = (ask(f"Numero stazione [1-{len(lst)}, 0 = annulla]: ").strip() or "1")
+    if s == "0":
+        return None
+    try:
+        choice = lst[int(s) - 1] if 1 <= int(s) <= len(lst) else None
+    except ValueError:
+        choice = None
+    if not isinstance(choice, dict):
+        p_warn("Numero non valido.")
+        return None
+    sid = str(choice.get("id") or choice.get("stationId") or "")
+    name = str(choice.get("name") or choice.get("stationName") or "?")
+    return sid, name
+
+def pick_regional_provider(country):
+    """Sceglie il provider regionale numerato: ritorna il nome o None."""
+    try:
+        provs = reg_providers(country) or []
+    except Exception:
+        provs = []
+    provs = [p for p in provs if isinstance(p, dict)]
+    if not provs:
+        p_warn("Nessun provider regionale.")
+        return None
+    for i, p in enumerate(provs, 1):
+        print(f"  {ok(f'[{i}]')} {p.get('name', '?')}  {dim(str(p.get('description') or ''))}")
+    s = (ask(f"Numero provider [1-{len(provs)}, 0 = annulla]: ").strip() or "0")
+    try:
+        sel = provs[int(s) - 1] if 1 <= int(s) <= len(provs) else None
+    except ValueError:
+        sel = None
+    if not isinstance(sel, dict):
+        return None
+    return str(sel.get("name") or "")
+
+def train_board_loop(sid, country, arrivi, station_name="?", provider=None):
+    """Stesso loop per nazionale (provider=None) e regionali (provider=nome).
+
+    Stesso formato tabella, stesse azioni; cambiano solo gli endpoint
+    (TRAINBOARD vs .../api/{country}/trains/{provider} su betacloud).
+    Ritorna None (= menu) o {"country":..., "provider":...}.
+    """
+    regional = bool(provider)
+    base = reg_base(country, provider) if regional else None
+    push_recent("recent_regstations" if regional else "recent_stations",
+                {"name": station_name, "sid": sid, "country": country,
+                 **({"provider": provider} if regional else {})})
+    if not regional:
+        save_state({"last_board": {"sid": sid, "country": country,
+                                   "arrivi": bool(arrivi), "name": station_name}})
+    opt2 = "Cambia provider" if regional else "Cambia nazione"
+    board = []
+    while True:
+        if regional:
+            board = reg_board(country, provider, sid, arrivi) or []
+        else:
+            board = train_board(sid, country, arrivi) or []
+        nxt = (ask("\nTasto R) Aggiorna [invio]  1) Altra stazione  2) " + opt2 + "  "
+                   f"3) Passa a {'Partenze' if arrivi else 'Arrivi'}  "
+                   f"4) Timeline treno  5) Grafica  0) Menu  [R]: ").strip() or "R")
+        if nxt.lower() == "r":
+            continue
+        if nxt == "3":
+            arrivi = not arrivi
+            if not regional:
+                save_state({"last_board": {"sid": sid, "country": country,
+                                           "arrivi": bool(arrivi),
+                                           "name": station_name}})
+        elif nxt in ("4", "5"):
+            row = pick_board_row(board)
+            if row is None:
+                continue
+            trip_id = str(row.get("tripId") or "")
+            if nxt == "5":
+                if not trip_id:
+                    p_warn("Trip non disponibile per questa riga.")
+                    continue
+                open_timeline_gui(trip_id, country,
+                                  trip_base=base, board_base=base)
+                continue
+            if regional:
+                stops = [x for x in (row.get("stops") or []) if isinstance(x, dict)]
+                if stops:
+                    p_title(f"🏳️ {train_label(row.get('line'), row.get('tripNumber'))} → "
+                            f"{row.get('destination') or ''}")
+                    print_timeline(stops)
+                elif trip_id:
+                    reg_trip(country, provider, trip_id)
+                else:
+                    p_warn("Timeline non disponibile per questa riga.")
+            elif trip_id:
+                train_trip(trip_id, country)
+            else:
+                num = str(row.get("tripNumber") or row.get("trainNumber") or "")
+                if not num:
+                    p_warn("Trip non disponibile per questa riga.")
+                    continue
+                train_details(num, sid, country)
+        elif nxt == "2":
+            if regional:
+                new_prov = pick_regional_provider(country)
+                if new_prov:
+                    return {"country": country, "provider": new_prov}
+            else:
+                return {"country": pick_country(), "provider": None}
+        elif nxt == "0":
+            return None
+        else:
+            return {"country": country, "provider": provider if regional else None}
+
 def simple_train():
     country = pick_country()
     while True:
-        q = ask("\nNome stazione (0 = menu): ")
+        rec = get_recent("recent_stations")
+        if rec:
+            print(f"\n  {dim('Recenti:')}")
+            for i, e in enumerate(rec, 1):
+                print(f"  {c_train(f'[R{i}]')} {e.get('name')}  "
+                      f"{dim(str(e.get('sid')) + ' · ' + str(e.get('country')))}")
+        q = ask("\nNome stazione, R-numero (0 = menu): ")
         if not q or q.strip() == "0":
             return
-        try:
-            _, lst = fetch_stations(q, country)
-        except Exception as e:
-            p_err(f"Errore ricerca: {e}")
+        q = q.strip()
+        if q.lower().startswith("r") and q[1:].isdigit():
+            idx = int(q[1:]) - 1
+            if 0 <= idx < len(rec):
+                e = rec[idx]
+                m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+                r = train_board_loop(str(e.get("sid")), str(e.get("country") or country),
+                                     m == "2", str(e.get("name") or "?"))
+                if r is None:
+                    return
+                country = r.get("country", country)
+                continue
+            p_warn("Recente non valido.")
             continue
-        if not lst:
-            p_warn("Nessuna stazione trovata, riprova.")
+        pick = station_search_pick(q, country)
+        if pick is None:
             continue
-        p_title(f'🚂 Stazioni · "{q}" [{country}]')
-        for i, e in enumerate(lst, 1):
-            e = e if isinstance(e, dict) else {}
-            name = e.get("name") or e.get("stationName") or "?"
-            print(f"  {c_train(f'[{i}]')} {bold(name)}")
-        s = ask("Numero stazione (0 = nuova ricerca): ").strip()
-        if s == "0" or not s:
-            continue
-        try:
-            choice = lst[int(s) - 1] if 1 <= int(s) <= len(lst) else None
-        except ValueError:
-            choice = None
-        if not choice:
-            p_warn("Numero non valido.")
-            continue
-        sid = str(choice.get("id") or choice.get("stationId") or "")
+        sid, name = pick
         m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
-        arrivi = (m == "2")
-        board = []
-        while True:
-            board = train_board(sid, country, arrivi) or []
-            nxt = ask("\nTasto 1) Altra stazione  2) Cambia nazione  "
-                      f"3) Passa a {'Partenze' if arrivi else 'Arrivi'}  "
-                      f"4) Timeline treno  5) Timeline grafica (finestra)  0) Menu  [1]: ").strip() or "1"
-            if nxt == "3":
-                arrivi = not arrivi
-            elif nxt in ("4", "5"):
-                row = pick_board_row(board)
-                if row is None:
-                    continue
-                trip_id = str(row.get("tripId") or "")
-                if nxt == "5":
-                    if not trip_id:
-                        p_warn("Trip non disponibile per questa riga.")
-                        continue
-                    open_timeline_gui(trip_id, country)
-                    continue
-                if trip_id:
-                    train_trip(trip_id, country)
-                else:
-                    num = str(row.get("tripNumber") or row.get("trainNumber") or "")
-                    if not num:
-                        p_warn("Trip non disponibile per questa riga.")
-                        continue
-                    train_details(num, sid, country)
-            elif nxt == "2":
-                country = pick_country()
-                break
-            elif nxt == "0":
-                return
-            else:
-                break
+        r = train_board_loop(sid, country, m == "2", name)
+        if r is None:
+            return
+        country = r.get("country", country)
 
 def simple_bus():
     try:
@@ -3000,56 +4148,91 @@ def simple_bus():
         return p_err(f"Errore providers: {e}")
     if not provs:
         return p_warn("Nessun provider.")
+    last_prov = str(app_state().get("bus_provider") or "")
     for i, p in enumerate(provs, 1):
-        print(f"  {c_bus(f'[{i}]')} {p.get('name', '?')}  {dim(provider_country(p))}")
-    s = ask("Numero provider [1]: ").strip() or "1"
+        mark = " ←" if str(p.get("name", "")) == last_prov else ""
+        print(f"  {c_bus(f'[{i}]')} {p.get('name', '?')}  {dim(provider_country(p))}{mark}")
+    dflt = next((str(i) for i, p in enumerate(provs, 1)
+                 if str(p.get("name", "")) == last_prov), "1")
+    s = ask(f"Numero provider [{dflt}]: ").strip() or dflt
     try:
         sel = provs[int(s) - 1]
     except (ValueError, IndexError):
         sel = provs[0]
     provider = str(sel.get("name"))
     country = provider_country(sel)
+    save_state({"bus_provider": provider})
     p_info(f"Provider: {provider} [{country}] — scarico fermate…")
     try:
         _, _, stops = fetch_bus_stops(provider, country)
     except Exception as e:
         return p_err(f"Errore fermate: {e}")
     p_ok(f"{len(stops)} fermate caricate.")
+    stop_index = {x.get("stopId"): x for x in stops if x.get("stopId")}
     while True:
-        q = ask("\nNome fermata (0 = menu): ")
+        rec = get_recent("recent_busstops")
+        rec = [e for e in rec if e.get("provider") == provider][:5]
+        if rec:
+            print(f"\n  {dim('Recenti:')}")
+            for i, e in enumerate(rec, 1):
+                print(f"  {c_bus(f'[R{i}]')} {e.get('name')}  {dim(str(e.get('stop_id')))}")
+        q = ask("\nNome fermata, ID o R-numero (0 = menu): ")
         if not q or q.strip() == "0":
             return
         q = q.strip()
-        found = [x for x in stops
-                 if q.lower() in str(x.get("stopName") or "").lower()
-                 or q in str(x.get("stopId") or "")][:10]
-        if not found:
-            p_warn("Nessuna fermata trovata, riprova.")
-            continue
-        by_id = {x.get("stopId"): x for x in found}
-        if q in by_id:
-            bus_departures(provider, q, country)
-        else:
-            for i, x in enumerate(found, 1):
-                print(f"  {c_bus(f'[{i}]')} {x.get('stopName')}  {dim(x.get('stopId'))}")
-            s = ask("Numero fermata o ID diretto (0 = nuova ricerca): ").strip()
-            if s == "0" or not s:
-                continue
-            choice = None
-            if s in by_id:
-                choice = by_id[s]
+        stop_id, stop_name = None, None
+        if q.lower().startswith("r") and q[1:].isdigit():
+            idx = int(q[1:]) - 1
+            if 0 <= idx < len(rec):
+                stop_id = str(rec[idx].get("stop_id"))
+                stop_name = str(rec[idx].get("name") or stop_id)
             else:
-                try:
-                    choice = found[int(s) - 1] if 1 <= int(s) <= len(found) else None
-                except ValueError:
-                    choice = None
-            if not choice:
-                p_warn("Numero non valido.")
+                p_warn("Recente non valido.")
                 continue
-            bus_departures(provider, str(choice.get("stopId")), country)
-        nxt = ask("\nTasto 1) Altra fermata  0) Menu  [1]: ").strip() or "1"
-        if nxt == "0":
-            return
+        elif q in stop_index:
+            stop_id = q
+            stop_name = str(stop_index[q].get("stopName") or q)
+        else:
+            found = [x for x in stops
+                     if q.lower() in str(x.get("stopName") or "").lower()
+                     or q in str(x.get("stopId") or "")][:10]
+            if not found:
+                p_warn("Nessuna fermata trovata, riprova.")
+                continue
+            by_id = {x.get("stopId"): x for x in found}
+            if q in by_id:
+                stop_id = q
+                stop_name = str(by_id[q].get("stopName") or q)
+            else:
+                for i, x in enumerate(found, 1):
+                    print(f"  {c_bus(f'[{i}]')} {x.get('stopName')}  {dim(x.get('stopId'))}")
+                s = ask("Numero fermata o ID diretto (0 = nuova ricerca): ").strip()
+                if s == "0" or not s:
+                    continue
+                choice = None
+                if s in by_id:
+                    choice = by_id[s]
+                else:
+                    try:
+                        choice = found[int(s) - 1] if 1 <= int(s) <= len(found) else None
+                    except ValueError:
+                        choice = None
+                if not choice:
+                    p_warn("Numero non valido.")
+                    continue
+                stop_id = str(choice.get("stopId"))
+                stop_name = str(choice.get("stopName") or stop_id)
+        push_recent("recent_busstops",
+                    {"name": stop_name, "stop_id": stop_id, "provider": provider})
+        while True:
+            bus_departures(provider, stop_id, country)
+            nxt = (ask("\nTasto R) Aggiorna [invio]  1) Altra fermata  0) Menu  [R]: ").strip() or "R")
+            if nxt.lower() == "r":
+                continue
+            elif nxt == "0":
+                return
+            else:
+                break
 
 def simple_fly():
     while True:
@@ -3065,8 +4248,10 @@ def simple_fly():
             arrivi = (m == "2")
             while True:
                 airport(iata, arrivi)
-                nxt = ask("\nTasto 1) Altro aeroporto  "
-                          f"2) Passa a {'Partenze' if arrivi else 'Arrivi'}  0) Menu  [1]: ").strip() or "1"
+                nxt = (ask("\nTasto R) Aggiorna [invio]  1) Altro aeroporto  "
+                           f"2) Passa a {'Partenze' if arrivi else 'Arrivi'}  0) Menu  [R]: ").strip() or "R")
+                if nxt.lower() == "r":
+                    continue
                 if nxt == "2":
                     arrivi = not arrivi
                 elif nxt == "0":
@@ -3204,6 +4389,14 @@ def menu():
         print(f"  {ok('5)')} ⭐ Preferiti           (apre per tipo: treno/stazione/bus/voli)")
         print(f"  {paint('6)', B)} 👤 Account             (login, profilo, logout)")
         print(f"  {dim('0) Esci')}")
+        nick = (session().get("user") or {}).get("nickname")
+        lb = app_state().get("last_board") or {}
+        ctx = f"Paese {last_country()}"
+        if nick:
+            ctx += f" · {nick}"
+        if lb.get("sid"):
+            ctx += f" · ultimo: {lb.get('name')} [{lb.get('sid')}]"
+        print(f"  {dim(ctx + ' — scrivi una stazione per cercarla subito')}")
         c = ask("\nScelta [0-6, help]: ").strip()
         if c == "1":
             simple_mode()
@@ -3217,11 +4410,22 @@ def menu():
             favorites_section()
         elif c == "6":
             account_section()
+        elif c.lower() == "ultimo" and lb.get("sid"):
+            train_board_loop(str(lb["sid"]), str(lb.get("country") or last_country()),
+                             bool(lb.get("arrivi")), str(lb.get("name") or "?"))
         elif c.split(" ", 1)[0].lower() in COMMANDS:
             run_direct(c)
         elif c in ("0", "q", "exit"):
             p_ok("Ciao! 👋")
             return
+        elif len(c) >= 2:
+            # testo libero = ricerca stazione immediata nel paese attuale
+            pick = station_search_pick(c, last_country())
+            if pick is None:
+                continue
+            sid, name = pick
+            m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+            train_board_loop(sid, last_country(), m == "2", name)
         else:
             p_warn("Scelta non valida: premi 1-6 oppure scrivi un comando.")
 

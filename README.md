@@ -5,6 +5,9 @@ Versione da terminale dell'app Flutter **BCTransporterMobileApp** — **tutte le
 - 🟢 Treni = verde · 🟡 Bus = giallo · 🔵 Voli = ciano · 🟣 FAL/Social = magenta
 - Ritardi: 🟢 in orario · 🟡 <5 min · 🔴 ≥5 min
 - `bc_cli.py`: solo stdlib Python, zero dipendenze, già verificato live
+- Finestra timeline: grafica avanzata con **CustomTkinter** (+ Pillow per i loghi)
+  se installati (`pip install customtkinter pillow`), altrimenti fallback
+  automatico alla finestra tkinter base — il resto resta stdlib
 - `bin/bc_cli.dart`: stesso porting in Dart puro (stesse funzioni, `dart:io`+`dart:convert`)
 
 ## Requisiti
@@ -16,7 +19,8 @@ Versione da terminale dell'app Flutter **BCTransporterMobileApp** — **tutte le
 
 ```bash
 cd bc_transporter_cli
-python bc_cli.py            # menu: 1) semplice  2) comandi  3) avanzato
+python bc_cli.py            # menu: ricorda paese/recenti, invio=aggiorna,
+                            # scrivi una stazione per cercarla subito, "ultimo" riapre
 python bc_cli.py --help
 ```
 

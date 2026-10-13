@@ -89,10 +89,13 @@ python bc_cli.py social --like <id> <nick> | --delete <id> <nick> | --user <nick
 python bc_cli.py auth --login <email> <pw> | --register <e> <p> <nick>
 python bc_cli.py auth --disponibile <nick> | --profilo <nick> | --stato | --logout
 
-# PREFERITI (stessi id/tipi dei modelli FavoriteItem/Stop/Train/BusLine)
-python bc_cli.py preferiti --lista
-python bc_cli.py preferiti --treno 5440 Bari Roma | --fermata 123 "Stazione X"
-python bc_cli.py preferiti --bus 11 "Linea 11" | --rimuovi <id> | --check <id>
+# PREFERITI (stessi id/tipi dei modelli FavoriteItem/Stop/Train/BusLine;
+# se loggato usa il database via API come l'app, altrimenti file locale)
+python bc_cli.py preferiti --lista [--cloud] | --sync
+python bc_cli.py preferiti --treno 5440 Bari Roma
+python bc_cli.py preferiti --fermata S11119 "Bari Centrale" --tipo trainStation --paese IT
+python bc_cli.py preferiti --bus 11 "Linea 11" --provider bari
+python bc_cli.py preferiti --rimuovi <id> | --check <id>
 
 # CONFIG (ApiService: retry 3x + fallback) + STATS + LOGHI + OFFLINE (OfflineSyncService su file)
 python bc_cli.py config --show | --stats-general | --stats-linee | --loghi

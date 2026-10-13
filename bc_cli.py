@@ -29,7 +29,9 @@ Uso:
     python bc_cli.py meteo --cerca roma | --ora Roma 41.9 12.5
     python bc_cli.py social --feed | --topic <id> | --online | --leaderboard
     python bc_cli.py auth --login <email> <pw> | --register <e> <p> <nick> | --stato
-    python bc_cli.py preferiti --lista | --treno <num> <org> <dest>
+    python bc_cli.py preferiti --lista [--cloud] | --treno <num> <org> <dest>
+                                     [--fermata <cod> <nome> --tipo trainStation --paese IT]
+                                     [--bus <linea> <nome> --provider bari] | --sync | --check <id>
     python bc_cli.py config --show | --stats-general | --loghi
     python bc_cli.py offline --lista | --size | --save <tipo> <id> <file>
     python bc_cli.py treni --live | --match <tripId> | --routing DA A --date X --time Y
@@ -213,6 +215,13 @@ def fmt_time(t):
             dt = datetime.fromtimestamp(ms / 1000)
             return dt.strftime("%H:%M")
         dt = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            # L'API manda orari UTC con "Z": convertiamo in ora locale
+            # (sulla macchina in Italia = Europe/Rome, es. 15:07Z -> 17:07).
+            try:
+                dt = dt.astimezone()
+            except Exception:
+                pass
         return dt.strftime("%H:%M")
     except Exception:
         return str(t)
@@ -473,6 +482,141 @@ def train_trip_data(trip_id, country):
     data = get_json(f"{TRAINBOARD}/{country}/trip?tripId={urllib.parse.quote(trip_id)}")
     return (data.get("data") if isinstance(data, dict) else None) or data or {}
 
+# -- Fallback ritardo dai tabelloni (port di
+# TrainProvider.refreshDelayFromUpcomingStations in
+# mobile_app/lib/features/train/presentation/providers/train_provider.dart,
+# usato dalla train_details_sheet quando il trip non fornisce il delay) -----
+_delayCandidates = {}
+_delayCandidateHits = {}
+
+def _board_delay_value(e):
+    # Mirror di TrainDeparture.fromJson: 'delay' int, altrimenti 'delayMinutes'.
+    # (bool esclusi: in Python bool e' sottoclasse di int.)
+    # None = voce senza info ritardo -> si passa alla stazione successiva
+    # (l'app Flutter con ?? 0 non distingue, qui evitiamo falsi "in orario").
+    for k in ("delay", "delayMinutes"):
+        v = e.get(k)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, int):
+            return v
+        try:
+            if v is not None and str(v).strip() != "":
+                return int(str(v).strip())
+        except (TypeError, ValueError):
+            pass
+    return None
+
+def _unwrap_board(raw):
+    e = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+    return e if isinstance(e, dict) else {}
+
+def refresh_delay_from_upcoming_stations(stops, trip_id="", train_number="",
+                                         destination="", country="IT",
+                                         current_delay=None, max_stations=3):
+    """Cerca il ritardo nei tabelloni delle prossime fermate.
+
+    Il trip endpoint spesso risponde delay=null mentre le bacheche di
+    stazione hanno il realtime (es. FR 8326: trip null, Bari dice +7).
+    Match per tripId, fallback numero+destinazione (il tripId cambia da
+    stazione a stazione). Isteresi come nell'app: se il trip non fornisce
+    alcun delay (None) adotta subito, altrimenti servono 2 conferme
+    consecutive dello stesso valore. Ritorna (delay:int|None, stazione:str|None).
+    """
+    from datetime import datetime, timezone, timedelta
+    items = [s for s in (stops or []) if isinstance(s, dict)]
+    if not items:
+        return None, None
+    now = datetime.now(timezone.utc)
+
+    def eff_dep(s):
+        return (parse_utc(s.get("estimatedDeparture")) or parse_utc(s.get("departure"))
+                or parse_utc(s.get("scheduledDeparture")) or parse_utc(s.get("time")))
+
+    indices = []
+    for i, s in enumerate(items):
+        if s.get("cancelled") or s.get("canceled") or s.get("isCancelled"):
+            continue
+        t = eff_dep(s)
+        if t is not None and t < now - timedelta(minutes=2):
+            continue  # gia' passata
+        indices.append(i)
+        if len(indices) >= max_stations:
+            break
+    if not indices:
+        # tutte passate (treno in arrivo): prova comunque le ultime
+        for i in range(len(items) - 1, -1, -1):
+            s = items[i]
+            if not (s.get("cancelled") or s.get("canceled") or s.get("isCancelled")):
+                indices.insert(0, i)
+                if len(indices) >= max_stations:
+                    break
+    if not indices:
+        return None, None
+
+    dest_norm = (destination or "").strip().lower()
+    num_norm = "".join(c for c in str(train_number or "") if c.isdigit())
+    key = f"id:{trip_id}" if trip_id else f"n:{num_norm}|{dest_norm}"
+
+    for i in indices:
+        stop = items[i]
+        station_id = str(stop.get("stationId") or stop.get("id") or stop.get("stopId") or "")
+        if not station_id:
+            continue
+        st_country = (stop.get("country") or country or "IT")
+        is_last = (i == len(items) - 1)
+        modes = ("arrivals",) if is_last else ("departures", "arrivals")
+        for ep in modes:
+            is_arr = (ep == "arrivals")
+            try:
+                board = as_list(get_json(
+                    f"{TRAINBOARD}/{st_country}/{ep}?stationId={urllib.parse.quote(station_id)}",
+                    timeout=8))
+            except Exception:
+                continue
+            match = None
+            if trip_id:
+                for raw in board:
+                    e = _unwrap_board(raw if isinstance(raw, dict) else {})
+                    if str(e.get("tripId") or "") == trip_id:
+                        match = e
+                        break
+            if match is None and num_norm:
+                for raw in board:
+                    e = _unwrap_board(raw if isinstance(raw, dict) else {})
+                    enum = "".join(c for c in str(e.get("tripNumber") or e.get("trainNumber") or "") if c.isdigit())
+                    if not enum or enum != num_norm:
+                        continue
+                    edest = (str(e.get("destination") or e.get("stationName") or "").strip().lower()
+                             if not is_arr else
+                             str(e.get("stationName") or e.get("destination") or "").strip().lower())
+                    if dest_norm and edest and edest != dest_norm:
+                        continue
+                    match = e
+                    break
+            if match is None:
+                continue
+            delay = _board_delay_value(match)
+            if delay is None:
+                continue
+            if current_delay is not None and delay == current_delay:
+                _delayCandidates.pop(key, None)
+                _delayCandidateHits.pop(key, None)
+                return delay, stop.get("station") or stop.get("stationName") or stop.get("name")
+            if current_delay is None:
+                return delay, stop.get("station") or stop.get("stationName") or stop.get("name")
+            if _delayCandidates.get(key) == delay:
+                hits = _delayCandidateHits.get(key, 1) + 1
+                _delayCandidateHits[key] = hits
+                if hits >= 2:
+                    _delayCandidates.pop(key, None)
+                    _delayCandidateHits.pop(key, None)
+                    return delay, stop.get("station") or stop.get("stationName") or stop.get("name")
+            else:
+                _delayCandidates[key] = delay
+                _delayCandidateHits[key] = 1
+    return None, None
+
 def fetch_train_logos(source="official"):
     meta = load_json_file(os.path.join(CACHE_DIR, "_meta.json"), {})
     cache_file = os.path.join(CACHE_DIR, "train_logos.json")
@@ -541,6 +685,13 @@ def collect_messages(trip):
                 out.append(m if isinstance(m, dict) else {"text": str(m)})
     return out
 
+def train_label(line, num):
+    # "FR 8807" contiene gia' il numero -> non ripeterlo ("FR 8807 8807")
+    line, num = str(line or "").strip(), str(num or "").strip()
+    if num and num in line:
+        return line
+    return (line + " " + num).strip()
+
 def open_timeline_gui(trip_id, country):
     # Finestra grafica rinnovata con componenti moderni in stile Material/Fluent (solo stdlib)
     import tkinter as tk
@@ -555,13 +706,16 @@ def open_timeline_gui(trip_id, country):
     if not stops:
         return p_warn("Trip senza fermate.")
 
-    # Palette colori moderna (Dark Theme curato)
-    BG, SURFACE, CARD, TXT, SUB, TRACK = "#121212", "#1E1E1E", "#2A2A2A", "#F8F9FA", "#A0A0A0", "#333333"
-    OK, WARN, ERR = "#2ECC71", "#F1C40F", "#E74C3C"
-    GUI_CAT = {"FR": "#E74C3C", "AV": "#E74C3C", "ICE": "#E74C3C", "TGV": "#E74C3C",
-               "IC": "#F39C12", "EC": "#F39C12", "EN": "#F39C12",
-               "REG": "#27AE60", "R": "#27AE60", "RE": "#27AE60", "RB": "#27AE60",
-               "S": "#00BCD4", "BUS": "#16A085", "TRAM": "#E91E63", "FAL": "#E91E63"}
+    # Palette dark raffinata (slate + accento categoria)
+    BG, SURFACE, CARD, CARD_HL = "#0A0C10", "#11151C", "#171D27", "#1F2733"
+    TXT, SUB, TERT = "#F2F5F9", "#8A94A6", "#4A5468"
+    BORDER, TRACK = "#232B38", "#1B2230"
+    PRIMARY = "#3B82F6"
+    OK, WARN, ERR = "#22C55E", "#F59E0B", "#EF4444"
+    GUI_CAT = {"FR": "#E30613", "AV": "#E30613", "ICE": "#E30613", "TGV": "#E30613",
+               "IC": "#F59E0B", "EC": "#F59E0B", "EN": "#F59E0B",
+               "REG": "#22C55E", "R": "#22C55E", "RE": "#22C55E", "RB": "#22C55E",
+               "S": "#06B6D4", "BUS": "#EAB308", "TRAM": "#EC4899", "FAL": "#EC4899"}
 
     def cat_hex(c):
         c = (c or "").upper()
@@ -572,7 +726,16 @@ def open_timeline_gui(trip_id, country):
             n = int(d or 0)
         except (TypeError, ValueError):
             n = 0
-        return OK if n <= 0 else (WARN if n < 5 else ERR)
+        return OK if n <= 0 else (WARN if n <= 5 else ERR)  # stesse soglie della sheet
+
+    def badge(parent, textvariable=None, text=None, color=PRIMARY):
+        # Badge stile sheet Flutter: sfondo tinta 10%, bordo tinta 20%, testo pieno
+        b = tk.Label(parent, textvariable=textvariable, text=text,
+                     font=("Segoe UI", 9, "bold"),
+                     bg=shade(color, 0.15), fg=color,
+                     highlightbackground=shade(color, 0.40),
+                     highlightthickness=1, padx=10, pady=4)
+        return b
 
     def shade(hexcol, f):
         hexcol = hexcol.lstrip("#")
@@ -582,21 +745,59 @@ def open_timeline_gui(trip_id, country):
 
     def mkbtn(parent, text, bg, fg="white", cmd=None, var=None):
         b = tk.Button(parent, text=text, textvariable=var,
-                      font=("Segoe UI", 9, "bold"), bg=bg, fg=fg,
-                      activebackground=shade(bg, 1.2), activeforeground=fg,
-                      relief="flat", padx=10, pady=6, cursor="hand2",
+                      font=("Segoe UI", 10, "bold"), bg=bg, fg=fg,
+                      activebackground=shade(bg, 1.25), activeforeground=fg,
+                      relief="flat", padx=14, pady=9, cursor="hand2",
                       bd=0, highlightthickness=0, command=cmd)
-        b.bind("<Enter>", lambda e: b.configure(bg=shade(bg, 1.2)))
+        b.bind("<Enter>", lambda e: b.configure(bg=shade(bg, 1.25)))
         b.bind("<Leave>", lambda e: b.configure(bg=bg))
         return b
 
-    def position(sts):
+    def ghostbtn(parent, text, cmd=None, var=None):
+        b = tk.Button(parent, text=text, textvariable=var,
+                      font=("Segoe UI", 10, "bold"), bg=CARD, fg=TXT,
+                      activebackground=CARD_HL, activeforeground=TXT,
+                      relief="flat", padx=14, pady=9, cursor="hand2",
+                      highlightbackground=BORDER, highlightthickness=1,
+                      bd=0, command=cmd)
+        b.bind("<Enter>", lambda e: b.configure(bg=CARD_HL))
+        b.bind("<Leave>", lambda e: b.configure(bg=CARD))
+        return b
+
+    def pill(parent, text=None, textvariable=None, bg="#000000", fg="white",
+             font=("Segoe UI", 9, "bold")):
+        """Pill scura semitrasparente per header colorati."""
+        f = tk.Frame(parent, bg=bg)
+        tk.Label(f, text=text, textvariable=textvariable, font=font,
+                 bg=bg, fg=fg, padx=12, pady=5).pack()
+        return f
+
+    def section(parent, text):
+        tk.Label(parent, text=text, font=("Segoe UI", 9, "bold"),
+                 bg=BG, fg=SUB).pack(anchor="w", pady=(18, 8))
+
+    def shift(dt, delay):
+        if dt is None or not delay:
+            return dt
+        from datetime import timedelta
+        try:
+            return dt + timedelta(minutes=int(delay))
+        except (TypeError, ValueError):
+            return dt
+
+    def position(sts, train_delay=0):
+        # Mirror di _calcRouteProgress della sheet: stimati prima, poi
+        # programmati + ritardo treno (il ritardo sposta gli orari).
         now = datetime.now(timezone.utc)
         eff = []
         for s in sts:
-            eff.append(parse_utc(s.get("estimatedDeparture")) or parse_utc(s.get("departure"))
-                       or parse_utc(s.get("time")) or parse_utc(s.get("estimatedArrival"))
-                       or parse_utc(s.get("arrival")))
+            eff.append(parse_utc(s.get("estimatedDeparture"))
+                       or shift(parse_utc(s.get("departure"))
+                                or parse_utc(s.get("scheduledDeparture"))
+                                or parse_utc(s.get("time")), train_delay)
+                       or parse_utc(s.get("estimatedArrival"))
+                       or shift(parse_utc(s.get("scheduledArrival"))
+                                or parse_utc(s.get("arrival")), train_delay))
         at = -1
         for i, t in enumerate(eff):
             if t is not None and t <= now:
@@ -613,8 +814,8 @@ def open_timeline_gui(trip_id, country):
     png_url = logo_png_for(cat, logos)
 
     root = tk.Tk()
-    root.title(f"BC.Transporter – {line} {num}".strip())
-    root.geometry("580x780")
+    root.title(f"BC.Transporter – {train_label(line, num)}".strip())
+    root.geometry("480x860")
     root.configure(bg=BG)
     
     style = ttk.Style(root)
@@ -639,15 +840,21 @@ def open_timeline_gui(trip_id, country):
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", on_close)
 
-    # -- Header Superiore (Hero Banner) --
+    # -- Header --
     head = tk.Frame(root, bg=hexcol)
     head.pack(fill="x")
-    
-    hrow = tk.Frame(head, bg=hexcol)
-    hrow.pack(fill="x", padx=16, pady=(14, 6))
-    
-    logo_box = tk.Label(hrow, bg=SURFACE, padx=10, pady=8, relief="flat")
-    logo_box.pack(side="left")
+
+    hwrap = tk.Frame(head, bg=hexcol)
+    hwrap.pack(fill="x", padx=22, pady=(22, 18))
+
+    hrow = tk.Frame(hwrap, bg=hexcol)
+    hrow.pack(fill="x")
+
+    logo_tile = tk.Frame(hrow, bg="white", padx=12, pady=10)
+    logo_tile.pack(side="left")
+    logo_box = tk.Label(logo_tile, bg="white", fg=hexcol,
+                        font=("Segoe UI", 17, "bold"), text=cat or "—")
+    logo_box.pack()
     if png_url:
         try:
             req = urllib.request.Request(png_url, headers=HEADERS)
@@ -659,117 +866,152 @@ def open_timeline_gui(trip_id, country):
             os.close(fd)
             img = tk.PhotoImage(file=tmp)
             os.remove(tmp)
-            if img.width() > 110:
-                img = img.subsample(max(1, img.width() // 110), 1)
+            # fattore UNIFORME su x e y dentro un box 104x44: con fattori
+            # diversi (es. subsample(nx, 1)) il logo si stira in verticale
+            n = 1
+            while img.width() // n > 104 or img.height() // n > 44:
+                n += 1
+            if n > 1:
+                img = img.subsample(n, n)
             logo_box.configure(image=img)
             logo_box.image = img
         except Exception:
-            logo_box.configure(text="🚂", font=("Segoe UI Emoji", 22), bg=hexcol, fg="white")
-    else:
-        logo_box.configure(text="🚂", font=("Segoe UI Emoji", 22), bg=hexcol, fg="white")
+            pass
 
     hinfo = tk.Frame(hrow, bg=hexcol)
-    hinfo.pack(side="left", padx=14)
-    title_var = tk.StringVar(value=f"{line} {num}".strip())
-    tk.Label(hinfo, textvariable=title_var, font=("Segoe UI", 22, "bold"),
-             bg=hexcol, fg="white").pack(anchor="w")
+    hinfo.pack(side="left", padx=(14, 0), fill="x", expand=True)
+    over_var = tk.StringVar(value=f"TRENO · {country}".strip())
+    tk.Label(hinfo, textvariable=over_var, font=("Segoe UI", 9, "bold"),
+             bg=hexcol, fg="#FFFFFF").pack(anchor="w")
+    title_var = tk.StringVar(value=train_label(line, num))
+    tk.Label(hinfo, textvariable=title_var, font=("Segoe UI", 26, "bold"),
+             bg=hexcol, fg="white").pack(anchor="w", pady=(1, 0))
     route_var = tk.StringVar()
-    tk.Label(hinfo, textvariable=route_var, font=("Segoe UI", 11, "bold"),
-             bg=hexcol, fg="#E0E0E0").pack(anchor="w", pady=(2, 0))
+    tk.Label(hinfo, textvariable=route_var, font=("Segoe UI", 12),
+             bg=hexcol, fg="#FFE9E9").pack(anchor="w", pady=(3, 0))
 
-    # Badge di stato nell'header
-    chips = tk.Frame(head, bg=hexcol)
-    chips.pack(fill="x", padx=16, pady=(4, 12))
-    
-    delay_var = tk.StringVar()
-    delay_lbl = tk.Label(chips, textvariable=delay_var, font=("Segoe UI", 9, "bold"),
-                         fg="white", padx=10, pady=4)
-    delay_lbl.pack(side="left")
-    
-    plat_var = tk.StringVar()
-    tk.Label(chips, textvariable=plat_var, font=("Segoe UI", 9, "bold"),
-             bg="#111111", fg="white", padx=10, pady=4).pack(side="left", padx=(8, 0))
-             
-    tk.Label(chips, text="● LIVE", font=("Segoe UI", 9, "bold"),
-             bg="#111111", fg="#2ECC71", padx=10, pady=4).pack(side="left", padx=(8, 0))
-             
+    # Pills di stato: una bianca per lo stato, le altre scure
+    chips = tk.Frame(hwrap, bg=hexcol)
+    chips.pack(fill="x", pady=(14, 0))
+
+    delay_var = tk.StringVar(value="")
+    status_pill = tk.Frame(chips, bg="white", padx=12, pady=6)
+    status_pill.pack(side="left")
+    delay_lbl = tk.Label(status_pill, textvariable=delay_var,
+                         font=("Segoe UI", 9, "bold"), bg="white", fg="#15803D")
+    delay_lbl.pack()
+
+    plat_var = tk.StringVar(value="")
+    plat_pill = pill(chips, textvariable=plat_var, bg="#000000", fg="white")
+    # visibile solo se c'e' un binario
+
+    live_pill = tk.Frame(chips, bg="#000000", padx=12, pady=6)
+    live_pill.pack(side="left", padx=(8, 0))
+    tk.Label(live_pill, text="● LIVE", font=("Segoe UI", 9, "bold"),
+             bg="#000000", fg="#4ADE80").pack()
+
     viewers_var = tk.StringVar(value="")
     tk.Label(chips, textvariable=viewers_var, font=("Segoe UI", 9, "bold"),
-             bg=hexcol, fg="white").pack(side="left", padx=(8, 0))
-
-    tk.Frame(head, bg=shade(hexcol, 0.7), height=3).pack(fill="x", side="bottom")
+             bg=hexcol, fg="white").pack(side="left", padx=(10, 0))
 
     # -- Barra inferiore fissa --
+    tk.Frame(root, bg=BORDER, height=1).pack(side="bottom", fill="x")
     upLbl_var = tk.StringVar(value="")
-    live_var = tk.StringVar(value="⏱ LIVE on")
-    bottom = tk.Frame(root, bg=SURFACE, padx=12, pady=10)
+    live_var = tk.StringVar(value="LIVE ON")
+    bottom = tk.Frame(root, bg=SURFACE)
     bottom.pack(side="bottom", fill="x")
-    
-    mkbtn(bottom, "🔄 Aggiorna", hexcol, cmd=lambda: refresh()).pack(side="left")
-    mkbtn(bottom, "", CARD, var=live_var,
-          cmd=lambda: (alive.update(live=not alive["live"]),
-                       live_var.set("⏱ LIVE on" if alive["live"] else "⏱ LIVE off"))
-          ).pack(side="left", padx=(8, 0))
-    mkbtn(bottom, "Chiudi", CARD, cmd=on_close).pack(side="right")
-    tk.Label(bottom, textvariable=upLbl_var, font=("Segoe UI", 8), bg=SURFACE, fg=SUB).pack(side="right", padx=10)
+    brow = tk.Frame(bottom, bg=SURFACE)
+    brow.pack(fill="x", padx=14, pady=12)
 
-    # -- Area Scrollabile Principale --
+    mkbtn(brow, "Aggiorna", hexcol, cmd=lambda: refresh()).pack(side="left")
+    ghostbtn(brow, "", var=live_var,
+             cmd=lambda: (alive.update(live=not alive["live"]),
+                          live_var.set("LIVE ON" if alive["live"] else "LIVE OFF"))
+             ).pack(side="left", padx=(8, 0))
+    ghostbtn(brow, "Chiudi", cmd=on_close).pack(side="right")
+    tk.Label(brow, textvariable=upLbl_var, font=("Segoe UI", 9), bg=SURFACE,
+             fg=SUB).pack(side="right", padx=(0, 12))
+
+    # -- Area scrollabile con colonna centrata (max 640px) --
     scroll_host = tk.Frame(root, bg=BG)
     scroll_host.pack(side="top", fill="both", expand=True)
-    
+
     outer = tk.Canvas(scroll_host, bg=BG, highlightthickness=0)
     vsb = ttk.Scrollbar(scroll_host, orient="vertical", command=outer.yview)
     outer.configure(yscrollcommand=vsb.set)
-    
+
     vsb.pack(side="right", fill="y")
     outer.pack(side="left", fill="both", expand=True)
-    
+
     body = tk.Frame(outer, bg=BG)
     outer.create_window((0, 0), window=body, anchor="nw", tags="bodywin")
+    content = tk.Frame(body, bg=BG)
+    content.pack(fill="x")
 
     def _sync_scroll(_e=None):
         try:
             outer.configure(scrollregion=outer.bbox("all"))
-            outer.itemconfigure("bodywin", width=outer.winfo_width())
+            w = outer.winfo_width()
+            outer.itemconfigure("bodywin", width=w)
+            # colonna centrata: su schermi larghi non si allarga a dismisura
+            side = max(18, (w - 640) // 2)
+            content.pack_configure(padx=(side, side))
         except Exception:
             pass
     body.bind("<Configure>", lambda e: _sync_scroll())
+    outer.bind("<Configure>", lambda e: _sync_scroll())
 
     def _wheel(e):
         try:
-            outer.yview_scroll(int(-e.delta / 120), "units")
+            d = int(-e.delta / 120) if getattr(e, "delta", 0) else 0
+            if d:
+                outer.yview_scroll(d, "units")
+            else:
+                outer.yview_scroll(1 if e.num == 5 else -1, "units")
         except Exception:
             pass
     outer.bind_all("<MouseWheel>", _wheel)
+    outer.bind_all("<Button-4>", _wheel)
+    outer.bind_all("<Button-5>", _wheel)
 
-    # -- Progresso Corsa --
-    prog = tk.Frame(body, bg=BG)
-    prog.pack(fill="x", padx=16, pady=(12, 4))
+    # -- Stato corsa --
+    prog = tk.Frame(content, bg=CARD, padx=16, pady=14)
+    prog.pack(fill="x", pady=(18, 0))
+    prog_top = tk.Frame(prog, bg=CARD)
+    prog_top.pack(fill="x")
     prog_lbl_var = tk.StringVar()
-    tk.Label(prog, textvariable=prog_lbl_var, font=("Segoe UI", 9, "bold"),
-             bg=BG, fg=SUB).pack(anchor="w")
-    bar = tk.Canvas(prog, height=6, bg=TRACK, highlightthickness=0)
-    bar.pack(fill="x", pady=(6, 0))
+    tk.Label(prog_top, textvariable=prog_lbl_var, font=("Segoe UI", 9, "bold"),
+             bg=CARD, fg=SUB).pack(side="left")
+    pct_var = tk.StringVar()
+    tk.Label(prog_top, textvariable=pct_var, font=("Segoe UI", 13, "bold"),
+             bg=CARD, fg=TXT).pack(side="right")
+    bar = tk.Canvas(prog, height=8, bg=TRACK, highlightthickness=0)
+    bar.pack(fill="x", pady=(10, 0))
+    state_var = tk.StringVar()
+    tk.Label(prog, textvariable=state_var, font=("Segoe UI", 11, "bold"),
+             bg=CARD, fg=TXT, justify="left").pack(anchor="w", pady=(10, 0))
 
-    # -- Card Prossima Fermata --
-    nxt = tk.Frame(body, bg=CARD, highlightbackground=hexcol, highlightthickness=1, padx=12, pady=10)
-    nxt.pack(fill="x", padx=16, pady=8)
-    tk.Label(nxt, text="PROSSIMA FERMATA", font=("Segoe UI", 8, "bold"),
-             bg=CARD, fg=SUB).pack(anchor="w")
+    # -- Prossima fermata (hero con banda accento) --
+    nxt = tk.Frame(content, bg=CARD)
+    nxt.pack(fill="x", pady=(12, 0))
+    tk.Frame(nxt, bg=hexcol, width=4).pack(side="left", fill="y")
+    nxt_in = tk.Frame(nxt, bg=CARD, padx=14, pady=12)
+    nxt_in.pack(side="left", fill="both", expand=True)
+    tk.Label(nxt_in, text="PROSSIMA FERMATA", font=("Segoe UI", 9, "bold"),
+             bg=CARD, fg=hexcol).pack(anchor="w")
     next_var = tk.StringVar()
-    tk.Label(nxt, textvariable=next_var, font=("Segoe UI", 12, "bold"),
-             bg=CARD, fg=TXT, wraplength=500, justify="left").pack(anchor="w", pady=(2, 0))
+    tk.Label(nxt_in, textvariable=next_var, font=("Segoe UI", 15, "bold"),
+             bg=CARD, fg=TXT, justify="left").pack(anchor="w", pady=(3, 0))
+    next_sub_var = tk.StringVar()
+    tk.Label(nxt_in, textvariable=next_sub_var, font=("Segoe UI", 11),
+             bg=CARD, fg=SUB, justify="left").pack(anchor="w", pady=(2, 0))
 
-    # -- Griglia Azioni Rapide (Card Interattive) --
-    actions = tk.Frame(body, bg=BG)
-    actions.pack(fill="x", padx=16, pady=4)
-    tk.Label(actions, text="AZIONI RAPIDE", font=("Segoe UI", 9, "bold"),
-             bg=BG, fg=hexcol).pack(anchor="w", pady=(0, 6))
-             
-    grid = tk.Frame(actions, bg=BG)
+    section(content, "AZIONI RAPIDE")
+
+    grid = tk.Frame(content, bg=BG)
     grid.pack(fill="x")
     match_var = tk.StringVar(value="")
-    stats_box = tk.Frame(body, bg=CARD)
+    stats_box = tk.Frame(content, bg=CARD)
 
     def toast(msg, bad=False):
         (messagebox.showwarning if bad else messagebox.showinfo)("BC.Transporter", msg)
@@ -799,7 +1041,7 @@ def open_timeline_gui(trip_id, country):
             tk.Label(r, text=k, font=("Segoe UI", 9), bg=CARD, fg=SUB).pack(side="left")
             tk.Label(r, text=v, font=("Segoe UI", 9, "bold"), bg=CARD, fg=TXT).pack(side="right")
         tk.Frame(stats_box, bg=CARD, height=10).pack()
-        stats_box.pack(fill="x", padx=16, pady=6)
+        stats_box.pack(fill="x", pady=(12, 0))
 
     def do_map():
         try:
@@ -846,11 +1088,14 @@ def open_timeline_gui(trip_id, country):
         toast(f"Salvato offline:\n{out}" if okw else "Salvataggio fallito", bad=not okw)
 
     def do_fav():
+        # routeId=tripId e provider=country: così la sezione Preferiti
+        # riapre diretto la timeline (come FavoriteTrain dell'app)
         fav_add("train", {"number": num,
                           "origin": stop_name(state["trip"].get("origin")),
                           "destination": stop_name(state["trip"].get("destination")),
-                          "name": f"Treno {num}"})
-        toast("Aggiunto ai preferiti ⭐")
+                          "name": f"Treno {num}",
+                          "routeId": trip_id, "provider": country})
+        toast("Aggiunto ai preferiti")
 
     def do_alerts():
         msgs = collect_messages(state["trip"])
@@ -888,92 +1133,165 @@ def open_timeline_gui(trip_id, country):
         match_var.set(("✓ match: " + det) if okm else "nessun match")
         toast(("Match trovato: " + det) if okm else "Nessun match multi-paese.")
 
-    for i, (label, fn) in enumerate([("📊 Statistiche", do_stats), ("🗺 Mappa", do_map),
-                                     ("🔗 Condividi", do_share), ("👥 Social", do_social),
-                                     ("💾 Salva", do_save), ("⚠ Avvisi", do_alerts),
-                                     ("☆ Preferito", do_fav), ("🔔 Match", do_match)]):
-        mkbtn(grid, label, CARD, cmd=fn).grid(row=i // 4, column=i % 4,
-                                              padx=4, pady=4, sticky="ew")
-    for c in range(4):
+    for i, (label, fn) in enumerate([("Statistiche", do_stats), ("Mappa", do_map),
+                                     ("Condividi", do_share), ("Social", do_social),
+                                     ("Salva", do_save), ("Avvisi", do_alerts),
+                                     ("Preferito", do_fav), ("Match", do_match)]):
+        ghostbtn(grid, label, cmd=fn).grid(row=i // 2, column=i % 2,
+                                           padx=4, pady=4, sticky="ew")
+    for c in range(2):
         grid.columnconfigure(c, weight=1)
     tk.Label(grid, textvariable=match_var, font=("Segoe UI", 9, "bold"),
-             bg=BG, fg=WARN).grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+             bg=BG, fg=WARN).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-    # -- Timeline Grafica --
-    tk.Label(body, text="TIMELINE FERMATE", font=("Segoe UI", 9, "bold"),
-             bg=BG, fg=hexcol).pack(anchor="w", padx=16, pady=(12, 4))
-    canvas = tk.Canvas(body, bg=BG, highlightthickness=0, height=220)
-    canvas.pack(fill="x", padx=16)
+    # -- Timeline fermate (widget veri: ora | binario | fermata) --
+    tl_head = tk.Frame(content, bg=BG)
+    tl_head.pack(fill="x", pady=(18, 8))
+    tk.Label(tl_head, text="FERMATE", font=("Segoe UI", 9, "bold"),
+             bg=BG, fg=SUB).pack(side="left")
+    tl_count_var = tk.StringVar(value="")
+    tk.Label(tl_head, textvariable=tl_count_var, font=("Segoe UI", 9),
+             bg=BG, fg=TERT).pack(side="left", padx=(8, 0))
 
-    def draw(data):
+    tl = tk.Frame(content, bg=CARD, padx=6, pady=6)
+    tl.pack(fill="x")
+
+    ROW_H = 64
+
+    def draw(data, train_delay=0):
         sts = [s for s in (data.get("stops") or data.get("stopovers") or [])
                if isinstance(s, dict)]
-        canvas.delete("all")
+        for w in tl.winfo_children():
+            w.destroy()
         if not sts:
+            tk.Label(tl, text="Nessuna fermata.", font=("Segoe UI", 10),
+                     bg=CARD, fg=SUB, pady=12).pack()
             return 0, 0
-        at, now, eff = position(sts)
-        row_h, x0, y0 = 70, 50, 35
-        h = y0 * 2 + row_h * max(len(sts) - 1, 0)
-        canvas.configure(height=h)
-        
-        canvas.create_line(x0, y0, x0, y0 + row_h * max(len(sts) - 1, 0),
-                           fill="#3A3A3A", width=3)
-        cur_y = y0 + max(at, 0) * row_h if at >= 0 else y0
-        if cur_y > y0:
-            canvas.create_line(x0, y0, x0, cur_y, fill=hexcol, width=4)
-            
+        at, now, eff = position(sts, train_delay)
+        n = len(sts)
+        tl_count_var.set(f"{n} fermate")
+
         for i, s in enumerate(sts):
-            y = y0 + i * row_h
             name = str(s.get("station") or s.get("stop") or s.get("stationName")
                        or s.get("name") or "?")
             arr = fmt_time(s.get("scheduledArrival") or s.get("arrival"))
             dep = fmt_time(s.get("scheduledDeparture") or s.get("departure") or s.get("time"))
             plat = str(s.get("platform") or s.get("actualPlatform") or "")
-            try:
-                dl = int(s.get("delay") or s.get("arrivalDelay") or s.get("departureDelay") or 0)
-            except (TypeError, ValueError):
-                dl = 0
-            cancelled = s.get("cancelled") or s.get("canceled") or s.get("isCancelled")
-            passed = at >= i and not (at == -1)
-            is_cur = at == i and eff[at] is not None and (now - eff[at]).total_seconds() <= 180
-            
-            if cancelled:
-                canvas.create_text(x0, y, text="✖", font=("Segoe UI", 14, "bold"), fill=ERR)
-                fg, fnt = (ERR, ("Segoe UI", 10, "italic"))
-            elif is_cur or (at == i and not cancelled):
-                canvas.create_oval(x0 - 16, y - 16, x0 + 16, y + 16,
-                                   outline=shade(hexcol, 1.4), width=2)
-                canvas.create_oval(x0 - 10, y - 10, x0 + 10, y + 10,
-                                   fill=hexcol, outline=hexcol)
-                fg, fnt = (TXT, ("Segoe UI", 11, "bold"))
-            elif passed:
-                canvas.create_oval(x0 - 6, y - 6, x0 + 6, y + 6,
-                                   fill="#7F8C8D", outline="#7F8C8D")
-                fg, fnt = (SUB, ("Segoe UI", 10))
+            # ritardo fermata: stimato proprio, altrimenti ritardo treno
+            # (da trip o da bacheche, come _estimateStopTimesGlobal)
+            _own = next((s[k] for k in ("delay", "arrivalDelay", "departureDelay")
+                         if s.get(k) is not None), None)
+            if _own is None:
+                dl = train_delay
             else:
-                canvas.create_oval(x0 - 6, y - 6, x0 + 6, y + 6,
-                                   fill=BG, outline="#7F8C8D", width=2)
-                fg, fnt = (TXT, ("Segoe UI", 10))
-                
-            canvas.create_text(x0 + 24, y - 9, text=name, anchor="w", font=fnt, fill=fg)
-            sub = f"{arr}/{dep}" if arr != dep else arr
+                try:
+                    dl = int(_own)
+                except (TypeError, ValueError):
+                    dl = train_delay
+            cancelled = bool(s.get("cancelled") or s.get("canceled") or s.get("isCancelled"))
+            passed = at >= i and at != -1
+            is_cur = (at == i and not cancelled and eff[at] is not None
+                      and (now - eff[at]).total_seconds() <= 180)
+            in_travel = (at == i and not cancelled and eff[at] is not None
+                         and (now - eff[at]).total_seconds() > 180)
+            is_last = i == n - 1
+
+            if cancelled:
+                state, state_fg = "SOPPRESSA", ERR
+            elif at == -1 and i == 0:
+                state, state_fg = "NON PARTITO", OK
+            elif at == n - 1 and is_last:
+                state, state_fg = "ARRIVATO", OK
+            elif is_cur:
+                state, state_fg = "QUI", OK
+            elif in_travel:
+                state, state_fg = "IN VIAGGIO", OK
+            elif passed:
+                state, state_fg = "", SUB
+            else:
+                state, state_fg = "", SUB
+
+            row = tk.Frame(tl, bg=CARD)
+            row.pack(fill="x")
+
+            # colonna orari (destra allineata)
+            tcol = tk.Frame(row, bg=CARD, width=76)
+            tcol.pack(side="left", fill="y")
+            tcol.pack_propagate(False)
+            if i == 0:
+                tk.Label(tcol, text=dep, font=("Segoe UI", 12, "bold"),
+                         bg=CARD, fg=TXT).pack(anchor="e", pady=(14, 0))
+                tk.Label(tcol, text="partenza", font=("Segoe UI", 8),
+                         bg=CARD, fg=TERT).pack(anchor="e")
+            elif is_last:
+                tk.Label(tcol, text=arr, font=("Segoe UI", 12, "bold"),
+                         bg=CARD, fg=TXT).pack(anchor="e", pady=(14, 0))
+                tk.Label(tcol, text="arrivo", font=("Segoe UI", 8),
+                         bg=CARD, fg=TERT).pack(anchor="e")
+            else:
+                tk.Label(tcol, text=arr, font=("Segoe UI", 11, "bold"),
+                         bg=CARD, fg=TXT).pack(anchor="e", pady=(10, 0))
+                tk.Label(tcol, text=dep, font=("Segoe UI", 10),
+                         bg=CARD, fg=SUB).pack(anchor="e")
+
+            # binario verticale
+            rail = tk.Canvas(row, width=26, height=ROW_H, bg=CARD,
+                             highlightthickness=0)
+            rail.pack(side="left", fill="y", padx=(10, 6))
+            mid = ROW_H // 2
+            # tratto sopra: percorso se siamo arrivati almeno a questa fermata
+            if i != 0:
+                rail.create_line(13, 0, 13, mid,
+                                 fill=hexcol if at != -1 and at >= i else TRACK, width=3)
+            # tratto sotto: percorso solo se abbiamo superato questa fermata
+            if not is_last:
+                rail.create_line(13, mid, 13, ROW_H,
+                                 fill=hexcol if at > i else TRACK, width=3)
+            if cancelled:
+                rail.create_text(13, mid, text="×", font=("Segoe UI", 14, "bold"), fill=ERR)
+            elif is_cur or in_travel or (at == i and not cancelled):
+                rail.create_oval(13 - 11, mid - 11, 13 + 11, mid + 11,
+                                 outline=hexcol, width=2)
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=hexcol, outline=hexcol)
+            elif passed:
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=hexcol, outline=hexcol)
+            else:
+                rail.create_oval(13 - 6, mid - 6, 13 + 6, mid + 6,
+                                 fill=CARD, outline="#5B6675", width=2)
+
+            # colonna info
+            info = tk.Frame(row, bg=CARD)
+            info.pack(side="left", fill="both", expand=True, pady=10)
+            top = tk.Frame(info, bg=CARD)
+            top.pack(fill="x")
+            name_fg = ERR if cancelled else (SUB if (passed and not is_cur and not in_travel) else TXT)
+            tk.Label(top, text=name, font=("Segoe UI", 12, "bold"),
+                     bg=CARD, fg=name_fg).pack(side="left")
+            if state:
+                tk.Label(top, text=state, font=("Segoe UI", 8, "bold"),
+                         bg=CARD, fg=state_fg).pack(side="right")
+            sub = tk.Frame(info, bg=CARD)
+            sub.pack(fill="x", pady=(3, 0))
+            bits = []
+            if arr != dep and i != 0 and not is_last:
+                bits.append(f"{arr} → {dep}")
+            elif is_last:
+                bits.append(f"arrivo {arr}")
+            elif i == 0:
+                bits.append(f"partenza {dep}")
             if plat:
-                sub += f"   •   bin {plat}"
-            canvas.create_text(x0 + 24, y + 10, text=sub, anchor="w",
-                               font=("Segoe UI", 8), fill=SUB)
-            if dl:
-                canvas.create_text(x0 + 440, y, text=f"+{dl}'",
-                                   font=("Segoe UI", 9, "bold"),
-                                   fill=delay_hex(dl), anchor="e")
-            if at == -1 and i == 0:
-                canvas.create_text(x0 + 440, y, text="🚂 non partito",
-                                   font=("Segoe UI", 8, "bold"), fill=OK, anchor="e")
-            elif at == len(sts) - 1 and i == len(sts) - 1:
-                canvas.create_text(x0 + 440, y, text="🚂 arrivato",
-                                   font=("Segoe UI", 8, "bold"), fill=OK, anchor="e")
-            elif at == i and eff[at] is not None and (now - eff[at]).total_seconds() > 180:
-                canvas.create_text(x0, y, text="🚂", font=("Segoe UI Emoji", 12))
-        return at, len(sts)
+                bits.append(f"bin {plat}")
+            tk.Label(sub, text="  •  ".join(bits), font=("Segoe UI", 10),
+                     bg=CARD, fg=SUB).pack(side="left")
+            if dl and not cancelled:
+                tk.Label(sub, text=f"+{dl} min", font=("Segoe UI", 10, "bold"),
+                         bg=CARD, fg=delay_hex(dl)).pack(side="right")
+
+        return at, n
+
+    tk.Frame(content, bg=BG, height=24).pack()
 
     def refresh():
         try:
@@ -981,35 +1299,100 @@ def open_timeline_gui(trip_id, country):
         except Exception:
             return
         state["trip"] = data
-        at, n = draw(data)
+        # Ritardo: prima il trip endpoint, poi le bacheche delle prossime
+        # fermate (stessa logica della train_details_sheet Flutter: il trip
+        # spesso risponde delay=null mentre i tabelloni hanno il realtime).
         try:
-            d = int(data.get("delay", 0) or 0)
+            _td = data.get("delay", data.get("delayMinutes"))
+            trip_delay = None if _td is None else int(_td)
         except (TypeError, ValueError):
+            trip_delay = None
+        _stops = [s for s in (data.get("stops") or data.get("stopovers") or [])
+                  if isinstance(s, dict)]
+        _dest = stop_name(data.get("destination"))
+        fb_delay, fb_station = refresh_delay_from_upcoming_stations(
+            _stops, trip_id=trip_id, train_number=num, destination=_dest,
+            country=country, current_delay=trip_delay)
+        if fb_delay is not None:
+            d = fb_delay
+            state["delay_src"] = f"bacheca {fb_station}" if fb_station else "bacheca"
+        elif trip_delay is not None:
+            d = trip_delay
+            state["delay_src"] = "trip"
+        else:
             d = 0
-        title_var.set(f"{data.get('line') or data.get('category') or line} "
-                      f"{data.get('tripNumber') or data.get('trainNumber') or num}".strip())
-        route_var.set(f"{stop_name(data.get('origin'))} → {stop_name(data.get('destination'))}")
-        delay_var.set("IN ORARIO" if d <= 0 else f"+{d} MIN")
-        delay_lbl.configure(bg=delay_hex(d))
-        plat_var.set(f"BIN {data.get('platform')}" if data.get("platform") else "")
-        done = max(at + 1, 0)
-        prog_lbl_var.set(f"Fermate completate: {done} di {n}")
-        bar.delete("all")
-        bar_width = bar.winfo_width() or 500
-        bar.create_rectangle(0, 0, bar_width * (done / max(n, 1)), 6,
-                             fill=hexcol, outline="")
-        if 0 <= at + 1 < n:
-            sts = [s for s in (data.get("stops") or []) if isinstance(s, dict)]
-            nx = sts[at + 1]
+            state["delay_src"] = ""
+        at, n = draw(data, d)
+        title_var.set(train_label(data.get('line') or data.get('category') or line,
+                                  data.get('tripNumber') or data.get('trainNumber') or num))
+        route_var.set(f"{stop_name(data.get('origin'))}  →  {stop_name(data.get('destination'))}")
+        # pill di stato bianca con testo colorato
+        delay_var.set("IN ORARIO" if d <= 0 else f"RITARDO +{d} MIN")
+        delay_lbl.configure(fg="#15803D" if d <= 0 else ("#B45309" if d <= 5 else "#DC2626"))
+        _plat = str(data.get("platform") or "").strip()
+        plat_var.set(f"BIN {_plat}" if _plat else "")
+        try:
+            if _plat:
+                plat_pill.pack(side="left", padx=(8, 0))
+            else:
+                plat_pill.pack_forget()
+        except Exception:
+            pass
+        # progresso + frase di stato
+        sts_all = [s for s in (data.get("stops") or data.get("stopovers") or [])
+                   if isinstance(s, dict)]
+        done = (at + 1) if at >= 0 else 0
+        pct = (done / max(n, 1)) if n else 0
+        _src = state.get("delay_src", "")
+        _suffix = f"  ·  RITARDO DA {_src.upper()}" if _src.startswith("bacheca") else ""
+        prog_lbl_var.set(f"PERCORSO · {done} DI {n} FERMATE{_suffix}")
+        pct_var.set(f"{int(pct * 100)}%")
+        try:
+            bar.delete("all")
+            bw = bar.winfo_width() or 400
+            if pct > 0:
+                bar.create_rectangle(0, 0, bw * pct, 8, fill=hexcol, outline="")
+        except Exception:
+            pass
+        if n and at == -1:
+            t0 = fmt_time(sts_all[0].get("scheduledDeparture") or sts_all[0].get("departure")
+                          or sts_all[0].get("time")) if sts_all else "—"
+            state_var.set(f"Treno fermo in stazione · partenza {t0}")
+        elif n and at == n - 1:
+            state_var.set("Corsa terminata · treno arrivato a destinazione")
+        elif n and 0 <= at < n:
+            cur = sts_all[at]
+            cn = str(cur.get("station") or cur.get("stop") or cur.get("stationName")
+                     or cur.get("name") or "?")
+            state_var.set(f"In viaggio · ultima fermata {cn}")
+        else:
+            state_var.set("")
+        # prossima fermata
+        if n and 0 <= at + 1 < n:
+            nx = sts_all[at + 1]
             nm = str(nx.get("station") or nx.get("stop") or nx.get("stationName")
                      or nx.get("name") or "?")
-            pl = nx.get("platform") or ""
-            next_var.set(f"{nm}" + (f"  •  binario {pl}" if pl else ""))
-        elif at == n - 1:
-            next_var.set("Treno arrivato a destinazione ✓")
+            nt = fmt_time(nx.get("scheduledArrival") or nx.get("arrival")
+                          or nx.get("scheduledDeparture") or nx.get("departure"))
+            pl = str(nx.get("platform") or "")
+            next_var.set(nm)
+            bits = []
+            if nt and nt != "—":
+                bits.append(f"ore {nt}")
+            if pl:
+                bits.append(f"binario {pl}")
+            next_sub_var.set("  •  ".join(bits))
+        elif n and at == n - 1:
+            next_var.set("Destinazione raggiunta")
+            next_sub_var.set("")
         else:
-            next_var.set("In attesa di partenza…")
+            next_var.set("—")
+            next_sub_var.set("")
         upLbl_var.set(f"Aggiornato {datetime.now().strftime('%H:%M:%S')}")
+        try:
+            _sync_scroll()
+        except Exception:
+            pass
 
     def tick_viewers():
         if not alive["on"]:
@@ -1024,7 +1407,7 @@ def open_timeline_gui(trip_id, country):
                                            "destination": stop_name(state["trip"].get("destination")),
                                            "country": country, "tripId": trip_id}})
                 v = res.get("viewers") if isinstance(res, dict) else None
-                viewers_var.set(f"👁 {v} online" if isinstance(v, int) and v > 0 else "")
+                viewers_var.set(f"● {v} online" if isinstance(v, int) and v > 0 else "")
         except Exception:
             pass
         if alive["on"]:
@@ -1041,7 +1424,10 @@ def open_timeline_gui(trip_id, country):
         if alive["on"]:
             root.after(30000, auto)
 
+    root.minsize(440, 640)
+
     refresh()
+    root.after_idle(_sync_scroll)
     tick_viewers()
     root.after(30000, auto)
     p_ok("Finestra timeline aperta con grafica moderna.")
@@ -2063,34 +2449,353 @@ def auth_logout():
     save_json_file(SESS_FILE, {})
     p_ok("Logout, sessione pulita.")
 
-# -- PREFERITI ----------------------------------------------------------------
-def fav_list():
+# -- PREFERITI (stessi id/modelli dell'app + sync database via API) ------------
+# Riconoscimento identico all'app (favorites_provider.dart):
+#   stop:    {userId}_{stopType}_{code}[_{country}][_{provider}]
+#            stopType = busStop | trainStation | airport
+#   train:   {userId}_train_{trainNumber}_{departureStation}_{arrivalStation}
+#   busLine: {userId}_bus_{provider}_{lineCode}
+# Sul database (server.js /api/favorites, auth Bearer): GET lista,
+# POST {id,type,data} salvo con il nostro id, DELETE {id}.
+FAV_API = f"{BASE}/api/favorites"
+STOP_TYPES = ("busStop", "trainStation", "airport")
+
+def _fav_auth():
+    s = session()
+    tok = s.get("token")
+    if not tok:
+        return None, "guest"
+    uid = (s.get("user") or {}).get("id", "guest")
+    return tok, str(uid)
+
+def _fav_get(url, token, timeout=12):
+    req = urllib.request.Request(url, headers={
+        **HEADERS, "Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8") or "{}")
+
+def fav_id_stop(uid, stop_type, code, country=None, provider=None):
+    st = stop_type if stop_type in STOP_TYPES else "busStop"
+    key = f"{uid}_{st}_{code}"
+    if country:
+        key += f"_{country}"
+    if (provider or "").strip():
+        key += f"_{provider.strip()}"
+    return key
+
+def fav_id_train(uid, number, dep, arr):
+    return f"{uid}_train_{number}_{dep}_{arr}"
+
+def fav_id_bus(uid, provider, line):
+    return f"{uid}_bus_{provider}_{line}"
+
+def fav_build(ftype, data, uid):
+    """(id, type, payload) negli stessi campi dei modelli Favorite*.dart."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    if ftype == "train":
+        num, dep, arr = (str(data.get("number") or "?"), str(data.get("origin") or "?"),
+                         str(data.get("destination") or "?"))
+        return (fav_id_train(uid, num, dep, arr), "train",
+                {"trainNumber": num, "departureStation": dep, "arrivalStation": arr,
+                 "departureTime": str(data.get("departureTime") or ""),
+                 "arrivalTime": str(data.get("arrivalTime") or ""),
+                 "operator": data.get("operator"), "category": data.get("category"),
+                 "routeId": data.get("routeId"), "provider": data.get("provider")}, now)
+    if ftype == "busLine":
+        prov, line = str(data.get("provider") or "bari"), str(data.get("line") or "?")
+        return (fav_id_bus(uid, prov, line), "busLine",
+                {"lineCode": line, "lineName": str(data.get("name") or line),
+                 "provider": prov, "routeId": data.get("routeId"),
+                 "agencyId": data.get("agencyId"), "color": data.get("color"),
+                 "textColor": data.get("textColor"),
+                 "description": data.get("description"), "url": data.get("url"),
+                 "stops": data.get("stops")}, now)
+    st = data.get("stopType") if data.get("stopType") in STOP_TYPES else "busStop"
+    code = str(data.get("code") or "?")
+    return (fav_id_stop(uid, st, code, data.get("country"), data.get("provider")), "stop",
+            {"name": str(data.get("name") or code), "code": code, "stopType": st,
+             "latitude": data.get("latitude"), "longitude": data.get("longitude"),
+             "city": data.get("city"), "region": data.get("region"),
+             "provider": data.get("provider"), "country": data.get("country")}, now)
+
+def fav_remote_list():
+    """Preferiti dal database (richiede login). Ritorna lista flat come l'app."""
+    tok, _ = _fav_auth()
+    if not tok:
+        return None
+    try:
+        res = _fav_get(FAV_API, tok)
+    except Exception as e:
+        p_err(f"Preferiti cloud: {e}")
+        return None
+    out = []
+    for item in (res.get("favorites") or []):
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        out.append({"id": item.get("id"), "userId": item.get("userId"),
+                    "type": item.get("type"), "addedAt": item.get("addedAt"),
+                    "data": {**data}})
+    return out
+
+def _fav_norm(f):
+    """Normalizza voci vecchie (chiavi number/origin/line/...) al formato app."""
+    d = dict(f.get("data") or {})
+    t = f.get("type")
+    if t == "train":
+        d.setdefault("trainNumber", d.get("number", "?"))
+        d.setdefault("departureStation", d.get("origin", "?"))
+        d.setdefault("arrivalStation", d.get("destination", "?"))
+    elif t == "busLine":
+        d.setdefault("lineCode", d.get("line", "?"))
+        d.setdefault("lineName", d.get("name") or d.get("line", "?"))
+        d.setdefault("provider", d.get("provider") or "bari")
+    elif t == "stop":
+        d.setdefault("code", d.get("code", "?"))
+        d.setdefault("name", d.get("name") or d.get("code", "?"))
+        d.setdefault("stopType", d.get("stopType") or "busStop")
+    return t, d
+
+def _fav_describe(f):
+    t, d = _fav_norm(f)
+    if t == "train":
+        return (f"{d.get('trainNumber', '?')}: {d.get('departureStation', '?')} "
+                f"→ {d.get('arrivalStation', '?')}")
+    if t == "busLine":
+        return f"{d.get('lineCode', '?')} - {d.get('lineName', '')} ({d.get('provider', '')})"
+    return f"{d.get('name', '?')} ({d.get('code', '?')})"
+
+def fav_open(fav):
+    """Apre un preferito con la vista giusta in base al tipo (come l'app)."""
+    t, d = _fav_norm(fav)
+    if t == "train":
+        num = str(d.get("trainNumber") or "")
+        trip_id = str(d.get("routeId") or "")
+        country = str(d.get("provider") or "IT").upper() or "IT"
+        if trip_id:
+            return open_timeline_gui(trip_id, country)
+        # senza tripId: risolvi dalla mappa live per numero
+        digits = "".join(c for c in num if c.isdigit())
+        try:
+            data = get_json("https://data.cuzimmartin.dev/train-map?north=85&south=-5&east=91"
+                            "&west=-64&duration=300&results=1000&polylines=false")
+        except Exception as e:
+            return p_err(f"Mappa live: {e}")
+        best = None
+        for m in (data.get("movements", []) if isinstance(data, dict) else []):
+            if not isinstance(m, dict):
+                continue
+            line = m.get("line") if isinstance(m.get("line"), dict) else {}
+            nm = f"{line.get('name', '')} {line.get('id', '')}"
+            if digits and digits in "".join(c for c in nm if c.isdigit()):
+                if m.get("tripId"):
+                    best = m
+                    break
+        if best:
+            c = pick_country()
+            return open_timeline_gui(str(best["tripId"]), c)
+        sid = ask("Treno non live, ID stazione per il dettaglio (invio = annulla): ")
+        if sid:
+            c = pick_country()
+            return train_details(num, sid, c)
+        return p_warn("Nessun trip disponibile per questo preferito.")
+    if t == "stop":
+        st, code = d.get("stopType"), str(d.get("code") or "")
+        if st == "trainStation":
+            c = (d.get("country") or "IT").upper()
+            m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+            return train_board(code, c, m == "2")
+        if st == "airport":
+            m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+            return airport(code.upper(), m == "2")
+        prov = str(d.get("provider") or "").strip() or ask("Provider bus (es. bari): ").strip()
+        if not prov:
+            return p_warn("Serve il provider per la fermata bus.")
+        return bus_departures(prov, code, "")
+    if t == "busLine":
+        prov, line = str(d.get("provider") or "bari"), str(d.get("lineCode") or "")
+        p_title(f"🚌 Linea {line} · {prov}")
+        try:
+            country = resolve_country(prov)
+            found = None
+            for page in (1, 2):
+                url = f"{BASE}/api/{country}/bus/{prov}/lines?page={page}&chunkSize=100"
+                data = get_json(url)
+                if not isinstance(data, dict):
+                    break
+                for ln in (data.get("lines") or []):
+                    if not isinstance(ln, dict):
+                        continue
+                    if str(ln.get("code") or ln.get("line") or ln.get("id") or "") == line:
+                        found = ln
+                        break
+                if found:
+                    break
+                pag = data.get("pagination") if isinstance(data.get("pagination"), dict) else None
+                if not pag or page >= int(pag.get("totalPages", 1)):
+                    break
+        except Exception as e:
+            return p_err(f"Linee: {e}")
+        if found:
+            print(f"  {c_bus(line)} {found.get('name') or found.get('description') or ''}")
+        else:
+            p_warn("Linea non trovata tra le prime righe del provider.")
+        return bus_vehicles(prov, "")
+    return p_warn(f"Tipo preferito sconosciuto: {t}")
+
+def account_section():
+    p_title("👤 Account")
+    while True:
+        s = session()
+        u = s.get("user") or {}
+        if u:
+            p_ok(f"Loggato come {u.get('email') or u.get('nickname')} "
+                 f"(nick: {u.get('nickname')}, id: {u.get('id')})")
+        else:
+            p_info("Non loggato (i preferiti restano locali).")
+        print(f"  {ok('[1]')} Stato  {ok('[2]')} Login  {ok('[3]')} Registra  "
+              f"{ok('[4]')} Cambia nick  {ok('[5]')} Verifica nick  "
+              f"{ok('[6]')} Logout  {warn('[7]')} Elimina account  {dim('[0] Indietro')}")
+        c = (ask("Scelta [0-7]: ") or "0").strip()
+        if c == "0":
+            return
+        elif c == "1":
+            auth_status()
+        elif c == "2":
+            e, p = ask("Email: "), ask("Password: ")
+            if e and p:
+                auth_login(e, p)
+        elif c == "3":
+            e, p, n = ask("Email: "), ask("Password: "), ask("Nickname: ")
+            if e and p and n:
+                auth_register(e, p, n)
+        elif c == "4":
+            n = ask("Nuovo nickname: ")
+            if n:
+                auth_profile(n)
+        elif c == "5":
+            n = ask("Nickname da verificare: ")
+            if n:
+                auth_available(n)
+        elif c == "6":
+            auth_logout()
+        elif c == "7":
+            p = ask("Password per confermare l'eliminazione (invio = annulla): ")
+            if p:
+                auth_delete(p)
+        else:
+            p_warn("Numero non valido.")
+
+def favorites_section():
     p_title("⭐ Preferiti")
-    favs = fav_all()
+    while True:
+        tok, _ = _fav_auth()
+        favs = fav_remote_list() if tok else fav_all()
+        if favs is None:
+            return
+        p_dim("Dal database (login attivo)." if tok
+              else "File locale (fai login per il database).")
+        if not favs:
+            p_info("Nessun preferito.")
+            return
+        for i, f in enumerate(favs, 1):
+            t, _ = _fav_norm(f)
+            print(f"  {ok(f'[{i}]')} {_fav_describe(f)}  {dim(str(t))}")
+        print(f"  {dim('[0] Indietro')}")
+        s = (ask(f"Numero [0-{len(favs)}]: ") or "0").strip()
+        if s == "0":
+            return
+        try:
+            fav = favs[int(s) - 1] if 1 <= int(s) <= len(favs) else None
+        except ValueError:
+            fav = None
+        if not isinstance(fav, dict):
+            p_warn("Numero non valido.")
+            continue
+        fav_open(fav)
+
+def fav_list(cloud=False):
+    tok, _ = _fav_auth()
+    if cloud or tok:
+        if not tok:
+            return p_warn("Devi fare login prima (auth --login <email> <pw>).")
+        p_title("⭐ Preferiti dal database")
+        favs = fav_remote_list()
+        if favs is None:
+            return
+    else:
+        p_title("⭐ Preferiti locali")
+        favs = fav_all()
+        if tok is None:
+            p_dim("Non loggato: mostro il file locale. Fai login per il database.")
     if not favs:
-        return p_info("Nessun preferito. Aggiungi con preferiti --aggiungi-... .")
+        return p_info("Nessun preferito.")
     for f in favs:
         print(f"  [{warn(str(f.get('id', '?')))}] {ok(str(f.get('type', '')))}  "
-              f"{short(f.get('data', {}).get('name') or f.get('data', {}).get('destination') or f.get('data'), 60)}")
+              f"{short(_fav_describe(f), 60)}")
+    p_dim(f"Totale: {len(favs)}")
 
 def fav_add(ftype, data):
+    tok, uid = _fav_auth()
+    key, ftype_name, payload, now = fav_build(ftype, data, uid)
+    if tok:
+        # salvabile nel database con il nostro id (riconoscimento uguale all'app)
+        try:
+            res = post_json(FAV_API, {"id": key, "type": ftype_name, "data": payload},
+                            token=tok)
+        except Exception as e:
+            return p_err(f"Salvataggio cloud: {e}")
+        fav = (res.get("favorite") if isinstance(res, dict) else None) or {}
+        rid = fav.get("id") or key
+        favs = [f for f in fav_all() if f.get("id") != rid]
+        favs.append({"id": rid, "userId": uid, "type": ftype_name,
+                     "addedAt": fav.get("addedAt") or now, "data": payload})
+        save_json_file(FAV_FILE, favs)
+        return p_ok(f"Salvato nel database: {rid}")
     favs = fav_all()
-    uid = (session().get("user") or {}).get("id", "guest")
-    key = {"stop": f"{uid}_busStop_{data.get('code', '?')}",
-           "train": f"{uid}_train_{data.get('number', '?')}",
-           "busLine": f"{uid}_bus_{data.get('line', '?')}"}[ftype]
     if any(f.get("id") == key for f in favs):
         return p_warn("Già nei preferiti.")
-    from datetime import datetime, timezone
-    favs.append({"id": key, "userId": uid, "type": ftype, "data": data,
-                 "addedAt": datetime.now(timezone.utc).isoformat()})
+    favs.append({"id": key, "userId": uid, "type": ftype_name,
+                 "addedAt": now, "data": payload})
     save_json_file(FAV_FILE, favs)
-    p_ok(f"Aggiunto {key}")
+    p_ok(f"Aggiunto (locale, fai login per il cloud): {key}")
 
 def fav_remove(fid):
+    tok, _ = _fav_auth()
+    if tok:
+        try:
+            status, _ = api_delete(f"{FAV_API}/{urllib.parse.quote(fid)}", token=tok)
+        except Exception as e:
+            return p_err(f"Rimozione cloud: {e}")
+        if status != 200:
+            return p_warn("Non rimosso dal database.")
     favs = [f for f in fav_all() if f.get("id") != fid]
     save_json_file(FAV_FILE, favs)
     p_ok(f"Rimosso {fid}")
+
+def fav_check(fid):
+    tok, _ = _fav_auth()
+    if tok:
+        favs = fav_remote_list()
+        if favs is None:
+            return
+        found = any(f.get("id") == fid for f in favs)
+    else:
+        found = any(f.get("id") == fid for f in fav_all())
+    p_ok("Nei preferiti.") if found else p_warn("Non nei preferiti.")
+
+def fav_sync():
+    """Scarica i preferiti dal database e li salva nel file locale."""
+    tok, _ = _fav_auth()
+    if not tok:
+        return p_warn("Devi fare login prima (auth --login <email> <pw>).")
+    favs = fav_remote_list()
+    if favs is None:
+        return
+    save_json_file(FAV_FILE, favs)
+    p_ok(f"Sincronizzati {len(favs)} preferiti dal database.")
+    p_dim(f"Mirror locale: {FAV_FILE}")
 
 # -- OFFLINE CACHE ------------------------------------------------------------
 def offline_save(ttype, ident, infile):
@@ -2495,21 +3200,30 @@ def menu():
         print(f"  {c_train('1)')} 🟢 Modalità semplice  (nazione → stazione → tabellone)")
         print(f"  {c_bus('2)')} ⌨️  Modalità comandi   (scrivi il comando diretto)")
         print(f"  {paint('3)', M)} 🧰 Menu avanzato      (tutte le funzioni)")
+        print(f"  {info('4)')} 📖 Guida comandi      (tutti i comandi)")
+        print(f"  {ok('5)')} ⭐ Preferiti           (apre per tipo: treno/stazione/bus/voli)")
+        print(f"  {paint('6)', B)} 👤 Account             (login, profilo, logout)")
         print(f"  {dim('0) Esci')}")
-        c = ask("\nScelta [0-3]: ").strip()
+        c = ask("\nScelta [0-6, help]: ").strip()
         if c == "1":
             simple_mode()
         elif c == "2":
             commands_mode()
         elif c == "3":
             advanced_menu()
+        elif c == "4" or c.lower() in ("help", "aiuto", "guida", "?"):
+            commands_guide()
+        elif c == "5":
+            favorites_section()
+        elif c == "6":
+            account_section()
         elif c.split(" ", 1)[0].lower() in COMMANDS:
             run_direct(c)
         elif c in ("0", "q", "exit"):
             p_ok("Ciao! 👋")
             return
         else:
-            p_warn("Scelta non valida: premi 1, 2, 3 oppure scrivi un comando.")
+            p_warn("Scelta non valida: premi 1-6 oppure scrivi un comando.")
 
 def advanced_menu():
     while True:
@@ -2736,11 +3450,17 @@ def build_parser():
     au.add_argument("--stato", action="store_true")
     au.add_argument("--logout", action="store_true")
 
-    fv = sub.add_parser("preferiti", help="preferiti locali (stessi id dell'app)")
+    fv = sub.add_parser("preferiti", help="preferiti (database se loggato, come l'app)")
     fv.add_argument("--lista", action="store_true")
+    fv.add_argument("--cloud", action="store_true")
+    fv.add_argument("--sync", action="store_true")
     fv.add_argument("--treno", nargs=3, metavar=("NUMERO", "ORIGINE", "DEST"))
     fv.add_argument("--fermata", nargs=2, metavar=("CODICE", "NOME"))
     fv.add_argument("--bus", nargs=2, metavar=("LINEA", "NOME"))
+    fv.add_argument("--tipo", choices=["busStop", "trainStation", "airport"],
+                    default="trainStation")
+    fv.add_argument("--paese", metavar="PAESE")
+    fv.add_argument("--provider", metavar="PROVIDER")
     fv.add_argument("--rimuovi", metavar="ID")
     fv.add_argument("--check", metavar="ID")
 
@@ -2869,13 +3589,17 @@ def main(argv=None):
             elif a.logout: auth_logout()
             else: parser.parse_args(["auth", "--help"])
         elif a.cmd == "preferiti":
-            if a.lista or not any([a.treno, a.fermata, a.bus, a.rimuovi, a.check]): fav_list()
+            if a.sync: fav_sync()
+            elif (a.cloud or a.lista or not any([a.treno, a.fermata, a.bus, a.rimuovi,
+                                                 a.check, a.cloud, a.sync])): fav_list(cloud=a.cloud)
             elif a.treno: fav_add("train", {"number": a.treno[0], "origin": a.treno[1], "destination": a.treno[2], "name": f"Treno {a.treno[0]}"})
-            elif a.fermata: fav_add("stop", {"code": a.fermata[0], "name": a.fermata[1]})
-            elif a.bus: fav_add("busLine", {"line": a.bus[0], "name": a.bus[1]})
+            elif a.fermata: fav_add("stop", {"code": a.fermata[0], "name": a.fermata[1],
+                                             "stopType": a.tipo, "country": a.paese,
+                                             "provider": a.provider})
+            elif a.bus: fav_add("busLine", {"line": a.bus[0], "name": a.bus[1],
+                                            "provider": a.provider or "bari"})
             elif a.rimuovi: fav_remove(a.rimuovi)
-            elif a.check:
-                p_ok("Nei preferiti.") if any(f.get("id") == a.check for f in fav_all()) else p_warn("Non nei preferiti.")
+            elif a.check: fav_check(a.check)
             else: parser.parse_args(["preferiti", "--help"])
         elif a.cmd == "config":
             if a.stats_general: stats_general()

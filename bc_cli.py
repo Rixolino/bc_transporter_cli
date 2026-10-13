@@ -882,7 +882,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
 
     root = tk.Tk()
     root.title(f"BC.Transporter – {train_label(line, num)}".strip())
-    root.geometry("480x860")
+    restore_window_geom(root, "480x860")
     root.configure(bg=BG)
     
     style = ttk.Style(root)
@@ -899,6 +899,11 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
 
     def on_close():
         alive["on"] = False
+        save_window_geom(root)
+        try:
+            cancel_timers()
+        except Exception:
+            pass
         try:
             post_json(f"{BASE}/api/train-presence/leave",
                       {"clientId": client_id, "trainKey": train_key})
@@ -1581,42 +1586,62 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
         except Exception:
             pass
 
+    timers = {"tick": None, "auto": None}
+
+    def cancel_timers():
+        for k in ("tick", "auto"):
+            try:
+                if timers[k]:
+                    root.after_cancel(timers[k])
+            except Exception:
+                pass
+            timers[k] = None
+
     def tick_viewers():
-        if not alive["on"]:
-            return
         try:
-            if root.winfo_exists():
-                res = post_json(f"{BASE}/api/train-presence/heartbeat",
-                                {"clientId": client_id, "trainKey": train_key,
-                                 "screen": "national",
-                                 "train": {"category": cat, "trainNumber": num,
-                                           "origin": stop_name(state["trip"].get("origin")),
-                                           "destination": stop_name(state["trip"].get("destination")),
-                                           "country": country, "tripId": trip_id}})
-                v = res.get("viewers") if isinstance(res, dict) else None
-                viewers_var.set(t("gui_online", v=v) if isinstance(v, int) and v > 0 else "")
+            if not alive["on"]:
+                return
+            try:
+                if root.winfo_exists():
+                    res = post_json(f"{BASE}/api/train-presence/heartbeat",
+                                    {"clientId": client_id, "trainKey": train_key,
+                                     "screen": "national",
+                                     "train": {"category": cat, "trainNumber": num,
+                                               "origin": stop_name(state["trip"].get("origin")),
+                                               "destination": stop_name(state["trip"].get("destination")),
+                                               "country": country, "tripId": trip_id}})
+                    v = res.get("viewers") if isinstance(res, dict) else None
+                    viewers_var.set(t("gui_online", v=v) if isinstance(v, int) and v > 0 else "")
+            except Exception:
+                pass
+            if alive["on"]:
+                timers["tick"] = root.after(15000, tick_viewers)
         except Exception:
             pass
-        if alive["on"]:
-            root.after(15000, tick_viewers)
 
     def auto():
-        if not alive["on"]:
-            return
         try:
-            if root.winfo_exists() and alive["live"]:
-                refresh()
+            if not alive["on"]:
+                return
+            try:
+                if root.winfo_exists() and alive["live"]:
+                    refresh()
+            except Exception:
+                pass
+            if alive["on"]:
+                timers["auto"] = root.after(30000, auto)
         except Exception:
             pass
-        if alive["on"]:
-            root.after(30000, auto)
 
     root.minsize(440, 640)
 
     refresh()
     root.after_idle(_sync_scroll)
     tick_viewers()
-    root.after(30000, auto)
+    try:
+        timers["auto"] = root.after(30000, auto)
+    except Exception:
+        pass
     p_ok("Finestra timeline aperta con grafica moderna.")
     root.mainloop()
 
@@ -1719,7 +1744,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
 
     root = ctk.CTk()
     root.title(f"BC.Transporter – {train_label(line, num)}")
-    root.geometry("520x920")
+    restore_window_geom(root, "520x920")
     root.minsize(460, 680)
     root.configure(fg_color=BG)
 
@@ -1738,6 +1763,11 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
 
     def on_close():
         alive["on"] = False
+        save_window_geom(root)
+        try:
+            cancel_timers()
+        except Exception:
+            pass
         try:
             post_json(f"{BASE}/api/train-presence/leave",
                       {"clientId": client_id, "trainKey": train_key})
@@ -2399,42 +2429,64 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
         _sync_pad()
         root.after_idle(_fix_scroll)
 
+    timers = {"tick": None, "auto": None}
+
+    def cancel_timers():
+        # i callback pendenti non devono sopravvivere alla chiusura,
+        # altrimenti scattano nella finestra successiva
+        for k in ("tick", "auto"):
+            try:
+                if timers[k]:
+                    root.after_cancel(timers[k])
+            except Exception:
+                pass
+            timers[k] = None
+
     def tick_viewers():
-        if not alive["on"]:
-            return
         try:
-            if root.winfo_exists():
-                res = post_json(f"{BASE}/api/train-presence/heartbeat",
-                                {"clientId": client_id, "trainKey": train_key,
-                                 "screen": "national",
-                                 "train": {"category": cat, "trainNumber": num,
-                                           "origin": stop_name(state["trip"].get("origin")),
-                                           "destination": stop_name(state["trip"].get("destination")),
-                                           "country": country, "tripId": trip_id}})
-                v = res.get("viewers") if isinstance(res, dict) else None
-                viewers_var.set(t("gui_online", v=v) if isinstance(v, int) and v > 0 else "")
+            if not alive["on"]:
+                return
+            try:
+                if root.winfo_exists():
+                    res = post_json(f"{BASE}/api/train-presence/heartbeat",
+                                    {"clientId": client_id, "trainKey": train_key,
+                                     "screen": "national",
+                                     "train": {"category": cat, "trainNumber": num,
+                                               "origin": stop_name(state["trip"].get("origin")),
+                                               "destination": stop_name(state["trip"].get("destination")),
+                                               "country": country, "tripId": trip_id}})
+                    v = res.get("viewers") if isinstance(res, dict) else None
+                    viewers_var.set(t("gui_online", v=v) if isinstance(v, int) and v > 0 else "")
+            except Exception:
+                pass
+            if alive["on"]:
+                timers["tick"] = root.after(15000, tick_viewers)
         except Exception:
             pass
-        if alive["on"]:
-            root.after(15000, tick_viewers)
 
     def auto():
-        if not alive["on"]:
-            return
         try:
-            if root.winfo_exists() and alive["live"]:
-                refresh()
+            if not alive["on"]:
+                return
+            try:
+                if root.winfo_exists() and alive["live"]:
+                    refresh()
+            except Exception:
+                pass
+            if alive["on"]:
+                timers["auto"] = root.after(30000, auto)
         except Exception:
             pass
-        if alive["on"]:
-            root.after(30000, auto)
 
     root.minsize(460, 680)
 
     refresh()
     root.after_idle(_sync_pad)
     tick_viewers()
-    root.after(30000, auto)
+    try:
+        timers["auto"] = root.after(30000, auto)
+    except Exception:
+        pass
     p_ok("Finestra timeline aperta (CustomTkinter).")
     root.mainloop()
 
@@ -3912,6 +3964,41 @@ def push_recent(kind, entry, limit=8):
 
 def get_recent(kind):
     return [e for e in (app_state().get(kind) or []) if isinstance(e, dict)]
+
+def save_window_geom(root):
+    # Salva posizione/dimensione/zoom finestra treni (ripristinati all'apertura)
+    try:
+        import re
+        zoomed = root.state() == "zoomed"
+        m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", root.geometry() or "")
+        if not m:
+            save_state({"train_win": {"zoomed": zoomed}})
+            return
+        w, h, x, y = map(int, m.groups())
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        x = max(0, min(x, max(0, sw - 200)))
+        y = max(0, min(y, max(0, sh - 200)))
+        save_state({"train_win": {"w": w, "h": h, "x": x, "y": y,
+                                  "zoomed": zoomed}})
+    except Exception:
+        pass
+
+def restore_window_geom(root, default):
+    try:
+        d = app_state().get("train_win") or {}
+        if d.get("zoomed"):
+            root.geometry(default)
+            root.after_idle(lambda: root.state("zoomed"))
+            return
+        w, h, x, y = int(d["w"]), int(d["h"]), int(d["x"]), int(d["y"])
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        w = max(400, min(w, sw))
+        h = max(500, min(h, sh))
+        x = max(0, min(x, max(0, sw - 200)))
+        y = max(0, min(y, max(0, sh - 200)))
+        root.geometry(f"{w}x{h}+{x}+{y}")
+    except Exception:
+        root.geometry(default)
 
 # -- I18N (stesse 4 lingue dell'app: it/en/de/fr) ---------------------------
 LANGS = ("it", "en", "de", "fr")

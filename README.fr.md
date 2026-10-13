@@ -174,6 +174,21 @@ python -m PyInstaller --clean --noconfirm --onefile --console --name BC-Transpor
 
 Session/favoris/cache partagés avec la version Python (mêmes fichiers home).
 
+## Avertissement SmartScreen (« Éditeur inconnu »)
+
+Le setup n'est pas signé numériquement : Windows le bloque jusqu'à
+**Informations complémentaires → Exécuter quand même** (c'est notre propre build, aucun risque).
+Alternative rapide :
+
+```powershell
+Unblock-File installer\out\BC-Transporter-Setup-1.0.0.exe   # retire le blocage web
+```
+
+Solution définitive pour distribuer : un certificat **code signing OV/EV**
+(payant), puis `installer\sign.bat cert.pfx [password]` (nécessite `signtool` du Windows SDK) —
+signe exe + setup avec horodatage. Avec EV l'avertissement disparaît aussitôt, avec OV
+quand le fichier accumule de la réputation.
+
 ## Origine des données (fichiers de l'app Flutter)
 
 | CLI | Fichier app d'origine |

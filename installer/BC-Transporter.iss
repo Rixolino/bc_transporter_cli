@@ -6,7 +6,7 @@
 AppId={{9AC1557F-13A4-4447-A062-BC489AF5F5CE}
 AppName=BC.Transporter
 AppVersion={#AppVersion}
-AppPublisher=BC.Transporter
+AppPublisher=BetaCloud Software
 DefaultDirName={autopf}\BC.Transporter
 DefaultGroupName=BC.Transporter
 DisableProgramGroupPage=yes

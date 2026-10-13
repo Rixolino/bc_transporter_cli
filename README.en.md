@@ -174,6 +174,21 @@ python -m PyInstaller --clean --noconfirm --onefile --console --name BC-Transpor
 
 Session/favorites/cache shared with the Python version (same home files).
 
+## SmartScreen warning ("Unknown publisher")
+
+The setup is not digitally signed: Windows blocks it until you click
+**More info → Run anyway** (it's our own build, no risk).
+Quick alternative:
+
+```powershell
+Unblock-File installer\out\BC-Transporter-Setup-1.0.0.exe   # removes the web block
+```
+
+Definitive fix for distribution: a paid **OV/EV code signing certificate**,
+then `installer\sign.bat cert.pfx [password]` (needs Windows SDK `signtool`) —
+signs exe + setup with timestamp. EV removes the warning immediately, OV after
+the file builds reputation.
+
 ## Data origin (Flutter app files)
 
 | CLI | Original app file |

@@ -233,7 +233,7 @@ def delay_badge(d):
     except (TypeError, ValueError):
         n = 0
     if n <= 0:
-        return ok("in orario")
+        return ok(t("in_time"))
     if n < 5:
         return warn(f"+{n} min")
     return err(f"+{n} min")
@@ -379,13 +379,13 @@ def stop_eff_time(s):
 def print_timeline(stops):
     items = [s for s in (stops or []) if isinstance(s, dict)]
     if not items:
-        return p_warn("Nessuna fermata nella timeline.")
+        return p_warn(t("tl_none"))
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     times = [stop_eff_time(s) for s in items]
     passed = [i for i, t in enumerate(times) if t is not None and t <= now]
     at = passed[-1] if passed else -1
-    print(f"\n  {bold(f'Timeline ({len(items)} fermate):')}")
+    print(f"\n  {bold(t('tl_title', n=len(items)))}")
     for i, s in enumerate(items):
         name = s.get("station") or s.get("stop") or s.get("stationName") or s.get("name") or "?"
         arr = fmt_time(s.get("scheduledArrival") or s.get("arrival"))
@@ -405,27 +405,27 @@ def print_timeline(stops):
         here = ""
         moving = False
         if at == -1 and i == 0:
-            here = f"  {ok('🚂 non partito')}"
+            here = f"  {ok(t('tl_not_left'))}"
         elif at == len(items) - 1 and i == len(items) - 1:
-            here = f"  {ok('🚂 arrivato')}"
+            here = f"  {ok(t('tl_arrived'))}"
         elif at == i and times[at] is not None:
             if (now - times[at]).total_seconds() <= 180:
-                here = f"  {ok('🚂 qui')}"
+                here = f"  {ok(t('tl_here'))}"
             else:
                 moving = True
         print(f"  {mark} {dim(times_.ljust(11))} {name}{tail}{here}")
         if i < len(items) - 1:
             if moving and at == i:
-                print(f"  {dim('│')} {ok('🚂 ↓ in viaggio')}")
+                print(f"  {dim('│')} {ok(t('tl_travel'))}")
             else:
                 print(f"  {dim('│')}")
 
 def print_board_table(lst, arrivi):
     """Tabella tabellone identica per nazionale e regionali (stesso formato)."""
     if not lst:
-        p_warn("Nessun treno trovato.")
+        p_warn(t("board_empty"))
         return []
-    head_place = 'PROVENIENZA' if arrivi else 'DESTINAZIONE'
+    head_place = t("col_from") if arrivi else t("col_dest")
     rows = []
     data_rows = []
     for raw in lst[:30]:
@@ -438,26 +438,28 @@ def print_board_table(lst, arrivi):
         cat = train_category(line, e.get("category"))
         place = short(str((e.get("origin") if arrivi else e.get("destination"))
                           or e.get("stationName") or "—"), 32)
-        t = fmt_time(e.get("scheduledTime") or e.get("time"))
+        ora = fmt_time(e.get("scheduledTime") or e.get("time"))
         plat = str(e.get("platform") or e.get("plannedPlatform") or "—")
-        rows.append((t, cat_paint(cat, label), place, paint(plat, Y),
+        rows.append((ora, cat_paint(cat, label), place, paint(plat, Y),
                      delay_badge(e.get("delay", 0))))
         data_rows.append(e)
-    w = [len("N"), len("ORA"), len("TRENO"), len(head_place), len("BIN")]
+    _h = [t("col_n"), t("col_time"), t("col_train"), head_place, t("col_plat")]
+    w = [len(x) for x in _h]
     for i, r in enumerate(rows, 1):
         w = [max(w[0], len(str(i))), max(w[1], vlen(r[0])), max(w[2], vlen(r[1])),
              max(w[3], vlen(r[2])), max(w[4], vlen(r[3]))]
-    print(f"  {dim(pad_v('N', w[0]))} {dim(pad_v('ORA', w[1]))} {dim(pad_v('TRENO', w[2]))} "
-          f"{dim(pad_v(head_place, w[3]))} {dim(pad_v('BIN', w[4]))} {dim('STATO')}")
+    print(f"  {dim(pad_v(_h[0], w[0]))} {dim(pad_v(_h[1], w[1]))} {dim(pad_v(_h[2], w[2]))} "
+          f"{dim(pad_v(head_place, w[3]))} {dim(pad_v(_h[4], w[4]))} {dim(t('col_state'))}")
     for i, r in enumerate(rows, 1):
         print(f"  {c_train(pad_v(str(i), w[0]))} {bold(pad_v(r[0], w[1]))} {pad_v(r[1], w[2])} "
               f"{pad_v(r[2], w[3])} {pad_v(r[3], w[4])} {r[4]}")
-    p_dim(f"Totale: {len(lst)} (mostrati max 30) · tasto 4 = timeline del treno")
+    p_dim(t("board_total", n=len(lst)))
     return data_rows
 
 def train_board(station_id, country, arrivi):
     ep = "arrivals" if arrivi else "departures"
-    p_title(f"🚂 {'Arrivi' if arrivi else 'Partenze'} · {station_id} [{country}]")
+    p_title(t("board_title_dep" if not arrivi else "board_title_arr",
+              sid=station_id, c=country))
     url = f"{TRAINBOARD}/{country}/{ep}?stationId={urllib.parse.quote(station_id)}"
     p_dim(f"GET {url}")
     try:
@@ -467,7 +469,7 @@ def train_board(station_id, country, arrivi):
     return print_board_table(lst, arrivi) or []
 
 def train_details(numero, stazione, country):
-    p_title(f"🚂 Dettaglio treno {numero} @ {stazione} [{country}]")
+    p_title(t("det_title", n=numero, s=stazione, c=country))
     url = (f"{TRAINBOARD}/{country}/details?trainNumber={urllib.parse.quote(numero)}"
            f"&stationId={urllib.parse.quote(stazione)}")
     p_dim(f"GET {url}")
@@ -476,12 +478,12 @@ def train_details(numero, stazione, country):
     except Exception as e:
         return p_err(f"Errore dettaglio treno: {e}")
     e = (data.get("data") if isinstance(data, dict) else None) or data or {}
-    print(f"  {bold('Categoria:')} {e.get('category') or e.get('line') or '—'}")
-    print(f"  {bold('Origine:')} {stop_name(e.get('origin') or e.get('stationName')) or '—'}")
-    print(f"  {bold('Destinazione:')} {stop_name(e.get('destination')) or '—'}")
-    print(f"  {bold('Orario:')} {fmt_time(e.get('scheduledTime') or e.get('time'))}  "
-          f"stimato {fmt_time(e.get('estimatedTime'))}  {delay_badge(e.get('delay', 0))}")
-    print(f"  {bold('Binario:')} {e.get('platform') or '—'}")
+    print(f"  {bold(t('det_cat'))} {e.get('category') or e.get('line') or '—'}")
+    print(f"  {bold(t('det_org'))} {stop_name(e.get('origin') or e.get('stationName')) or '—'}")
+    print(f"  {bold(t('det_dest'))} {stop_name(e.get('destination')) or '—'}")
+    print(f"  {bold(t('det_time'))} {fmt_time(e.get('scheduledTime') or e.get('time'))}  "
+          f"{t('det_est')} {fmt_time(e.get('estimatedTime'))}  {delay_badge(e.get('delay', 0))}")
+    print(f"  {bold(t('det_plat'))} {e.get('platform') or '—'}")
     print_timeline(e.get("stops") or e.get("stopovers") or [])
 
 def train_trip_data(trip_id, country, base=None):
@@ -769,7 +771,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
     stops = [s for s in (trip.get("stops") or trip.get("stopovers") or [])
              if isinstance(s, dict)]
     if not stops:
-        return p_warn("Trip senza fermate.")
+        return p_warn(t("gui_no_stops"))
 
     # Palette dark raffinata (slate + accento categoria)
     BG, SURFACE, CARD, CARD_HL = "#0A0C10", "#11151C", "#171D27", "#1F2733"
@@ -945,7 +947,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
 
     hinfo = tk.Frame(hrow, bg=hexcol)
     hinfo.pack(side="left", padx=(14, 0), fill="x", expand=True)
-    over_var = tk.StringVar(value=f"TRENO · {country}".strip())
+    over_var = tk.StringVar(value=t("gui_train", c=country))
     tk.Label(hinfo, textvariable=over_var, font=("Segoe UI", 9, "bold"),
              bg=hexcol, fg="#FFFFFF").pack(anchor="w")
     title_var = tk.StringVar(value=train_label(line, num))
@@ -982,18 +984,18 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
     # -- Barra inferiore fissa --
     tk.Frame(root, bg=BORDER, height=1).pack(side="bottom", fill="x")
     upLbl_var = tk.StringVar(value="")
-    live_var = tk.StringVar(value="LIVE ON")
+    live_var = tk.StringVar(value=t("gui_live_on"))
     bottom = tk.Frame(root, bg=SURFACE)
     bottom.pack(side="bottom", fill="x")
     brow = tk.Frame(bottom, bg=SURFACE)
     brow.pack(fill="x", padx=14, pady=12)
 
-    mkbtn(brow, "Aggiorna", hexcol, cmd=lambda: refresh()).pack(side="left")
+    mkbtn(brow, t("gui_update"), hexcol, cmd=lambda: refresh()).pack(side="left")
     ghostbtn(brow, "", var=live_var,
              cmd=lambda: (alive.update(live=not alive["live"]),
-                          live_var.set("LIVE ON" if alive["live"] else "LIVE OFF"))
+                          live_var.set(t("gui_live_on") if alive["live"] else t("gui_live_off")))
              ).pack(side="left", padx=(8, 0))
-    ghostbtn(brow, "Chiudi", cmd=on_close).pack(side="right")
+    ghostbtn(brow, t("gui_close"), cmd=on_close).pack(side="right")
     tk.Label(brow, textvariable=upLbl_var, font=("Segoe UI", 9), bg=SURFACE,
              fg=SUB).pack(side="right", padx=(0, 12))
 
@@ -1062,7 +1064,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
     tk.Frame(nxt, bg=hexcol, width=4).pack(side="left", fill="y")
     nxt_in = tk.Frame(nxt, bg=CARD, padx=14, pady=12)
     nxt_in.pack(side="left", fill="both", expand=True)
-    tk.Label(nxt_in, text="PROSSIMA FERMATA", font=("Segoe UI", 9, "bold"),
+    tk.Label(nxt_in, text=t("gui_next"), font=("Segoe UI", 9, "bold"),
              bg=CARD, fg=hexcol).pack(anchor="w")
     next_var = tk.StringVar()
     tk.Label(nxt_in, textvariable=next_var, font=("Segoe UI", 15, "bold"),
@@ -1071,7 +1073,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
     tk.Label(nxt_in, textvariable=next_sub_var, font=("Segoe UI", 11),
              bg=CARD, fg=SUB, justify="left").pack(anchor="w", pady=(2, 0))
 
-    section(content, "AZIONI RAPIDE")
+    section(content, t("gui_actions"))
 
     grid = tk.Frame(content, bg=BG)
     grid.pack(fill="x")
@@ -1086,21 +1088,21 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
             d = get_json(f"{BASE}/api/stats/train/{urllib.parse.quote(cat)}/"
                          f"{urllib.parse.quote(num)}")
         except Exception as e:
-            return toast(f"Statistiche non disponibili: {e}", bad=True)
+            return toast(t("gui_e_stats", e=e), bad=True)
         rep = (d.get("data") if isinstance(d, dict) else None) or d or {}
         m = rep.get("metrics") if isinstance(rep, dict) else None or {}
         ins = rep.get("insights") if isinstance(rep, dict) else None or {}
         for w in stats_box.winfo_children():
             w.destroy()
-        tk.Label(stats_box, text="STATISTICHE TRENO", font=("Segoe UI", 9, "bold"),
+        tk.Label(stats_box, text=t("gui_stats_title"), font=("Segoe UI", 9, "bold"),
                  bg=CARD, fg=SUB).pack(anchor="w", padx=12, pady=(10, 4))
-        for k, v in [("Affidabilità", str(m.get("reliabilityScore", "—"))),
-                     ("Trend", str(m.get("behaviorTrend", "—"))),
-                     ("Ritardo medio", f"{m.get('averageNetDelayChangeMinutes', '—')} min"),
-                     ("Cancellazioni", f"{m.get('cancellationRatePercentage', '—')}%"),
-                     ("Viaggi analizzati", str(m.get("totalTripsAnalyzed", "—"))),
-                     ("Giorno peggiore", str(ins.get("worstDayOfWeek", "—"))),
-                     ("Stazione critica", str(ins.get("criticalBottleneckStation", "—")))]:
+        for k, v in [(t("gui_s_rel"), str(m.get("reliabilityScore", "—"))),
+                     (t("gui_s_trend"), str(m.get("behaviorTrend", "—"))),
+                     (t("gui_s_avg"), f"{m.get('averageNetDelayChangeMinutes', '—')} min"),
+                     (t("gui_s_canc"), f"{m.get('cancellationRatePercentage', '—')}%"),
+                     (t("gui_s_trips"), str(m.get("totalTripsAnalyzed", "—"))),
+                     (t("gui_s_day"), str(ins.get("worstDayOfWeek", "—"))),
+                     (t("gui_s_station"), str(ins.get("criticalBottleneckStation", "—")))]:
             r = tk.Frame(stats_box, bg=CARD)
             r.pack(fill="x", padx=12, pady=2)
             tk.Label(r, text=k, font=("Segoe UI", 9), bg=CARD, fg=SUB).pack(side="left")
@@ -1112,7 +1114,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
         try:
             d = get_json(f"{BASE}/api/track-trip/{urllib.parse.quote(trip_id)}")
         except Exception as e:
-            return toast(f"Mappa non disponibile: {e}", bad=True)
+            return toast(t("gui_e_map", e=e), bad=True)
         dd = (d.get("data") if isinstance(d, dict) else None) or d or {}
         pos = dd.get("trainPosition") if isinstance(dd, dict) else None
         msg = f"Fermate tracciate: {len(dd.get('stops', []) if isinstance(dd, dict) else [])}"
@@ -1124,12 +1126,12 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
         try:
             url = sheet_share_link(trip_id, country, state["trip"])
         except Exception as e:
-            return toast(f"Condivisione fallita: {e}", bad=True)
+            return toast(t("gui_e_share", e=e), bad=True)
         if not url:
-            return toast("Condivisione fallita", bad=True)
+            return toast(t("gui_share_ko"), bad=True)
         root.clipboard_clear()
         root.clipboard_append(url)
-        toast(f"Link copiato negli appunti:\n{url}")
+        toast(t("gui_share_ok", url=url))
 
     def do_social():
         nick = simpledialog.askstring("Social", "Nickname:", parent=root)
@@ -1143,14 +1145,14 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
                                        "destination": stop_name(state["trip"].get("destination")),
                                        "country": country}, "nick": nick})
         except Exception as e:
-            return toast(f"Social: {e}", bad=True)
-        toast(f"Pubblicato: {res}")
+            return toast(t("gui_e_social", e=e), bad=True)
+        toast(t("gui_published", res=res))
 
     def do_save():
         os.makedirs(CACHE_DIR, exist_ok=True)
         out = cache_path("train", trip_id)
         okw = save_json_file(out, state["trip"])
-        toast(f"Salvato offline:\n{out}" if okw else "Salvataggio fallito", bad=not okw)
+        toast(t("gui_save_ok", out=out) if okw else t("gui_save_ko"), bad=not okw)
 
     def do_fav():
         # routeId=tripId e provider=country: così la sezione Preferiti
@@ -1160,14 +1162,14 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
                           "destination": stop_name(state["trip"].get("destination")),
                           "name": f"Treno {num}",
                           "routeId": trip_id, "provider": country})
-        toast("Aggiunto ai preferiti")
+        toast(t("gui_fav_added"))
 
     def do_alerts():
         msgs = collect_messages(state["trip"])
         if not msgs:
-            return toast("Nessun avviso per questo treno.")
+            return toast(t("gui_no_alerts"))
         win = tk.Toplevel(root)
-        win.title(f"Avvisi ({len(msgs)})")
+        win.title(t("gui_alerts_t", n=len(msgs)))
         win.configure(bg=BG)
         txt = tk.Text(win, wrap="word", bg=CARD, fg=TXT, font=("Segoe UI", 10),
                       width=60, height=min(20, len(msgs) + 2))
@@ -1188,20 +1190,20 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
                             {"tripId": trip_id, "country": country, "stops": payload},
                             timeout=50)
         except Exception as e:
-            return toast(f"Match: {e}", bad=True)
+            return toast(t("gui_e_match", e=e), bad=True)
         d = res.get("data") if isinstance(res, dict) else None
         ms = d.get("matches", []) if isinstance(d, dict) else []
         okm = bool(isinstance(d, dict) and d.get("isMatched") and any(
             isinstance(x, dict) and x.get("matched") for x in ms))
         det = ", ".join(str((x if isinstance(x, dict) else {}).get("country", "?"))
                         for x in ms[:5])
-        match_var.set(("✓ match: " + det) if okm else "nessun match")
-        toast(("Match trovato: " + det) if okm else "Nessun match multi-paese.")
+        match_var.set(t("gui_match_ok", d=det) if okm else t("gui_match_ko"))
+        toast(t("gui_match_found", d=det) if okm else t("gui_match_none"))
 
-    for i, (label, fn) in enumerate([("Statistiche", do_stats), ("Mappa", do_map),
-                                     ("Condividi", do_share), ("Social", do_social),
-                                     ("Salva", do_save), ("Avvisi", do_alerts),
-                                     ("Preferito", do_fav), ("Match", do_match)]):
+    _btns = t("gui_btns")
+    for i, (label, fn) in enumerate([(b, f) for b, f in zip(
+            _btns, [do_stats, do_map, do_share, do_social,
+                    do_save, do_alerts, do_fav, do_match])]):
         ghostbtn(grid, label, cmd=fn).grid(row=i // 2, column=i % 2,
                                            padx=4, pady=4, sticky="ew")
     for c in range(2):
@@ -1212,7 +1214,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
     # -- Timeline fermate (widget veri: ora | binario | fermata) --
     tl_head = tk.Frame(content, bg=BG)
     tl_head.pack(fill="x", pady=(18, 8))
-    tk.Label(tl_head, text="FERMATE", font=("Segoe UI", 9, "bold"),
+    tk.Label(tl_head, text=t("gui_stops"), font=("Segoe UI", 9, "bold"),
              bg=BG, fg=SUB).pack(side="left")
     tl_count_var = tk.StringVar(value="")
     tk.Label(tl_head, textvariable=tl_count_var, font=("Segoe UI", 9),
@@ -1259,13 +1261,13 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
         if i == 0:
             t1 = tk.Label(tcol, font=("Segoe UI", 12, "bold"), bg=CARD, fg=TXT)
             t1.pack(anchor="e", pady=(14, 0))
-            tk.Label(tcol, text="partenza", font=("Segoe UI", 8),
+            tk.Label(tcol, text=t("gui_dep"), font=("Segoe UI", 8),
                      bg=CARD, fg=TERT).pack(anchor="e")
             t2 = None
         elif is_last:
             t1 = tk.Label(tcol, font=("Segoe UI", 12, "bold"), bg=CARD, fg=TXT)
             t1.pack(anchor="e", pady=(14, 0))
-            tk.Label(tcol, text="arrivo", font=("Segoe UI", 8),
+            tk.Label(tcol, text=t("gui_arr"), font=("Segoe UI", 8),
                      bg=CARD, fg=TERT).pack(anchor="e")
             t2 = None
         else:
@@ -1368,15 +1370,15 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
             in_travel = seg == i and not cancelled
         marker_p = seg_p if (seg == i and not is_last) else None
         if cancelled:
-            st, st_fg = "SOPPRESSA", ERR
+            st, st_fg = t("gui_cancelled"), ERR
         elif at == -1 and i == 0:
-            st, st_fg = "NON PARTITO", OK
+            st, st_fg = t("gui_not_left"), OK
         elif at == n - 1 and is_last:
-            st, st_fg = "ARRIVATO", OK
+            st, st_fg = t("gui_arrived"), OK
         elif is_cur:
-            st, st_fg = "QUI", OK
+            st, st_fg = t("gui_here"), OK
         elif in_travel:
-            st, st_fg = "IN VIAGGIO", OK
+            st, st_fg = t("gui_travel"), OK
         else:
             st, st_fg = "", SUB
         rec["vis"].update(at=at, passed=passed, is_cur=is_cur,
@@ -1397,11 +1399,11 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
         if arr != dep and i != 0 and not is_last:
             bits.append(f"{arr} → {dep}")
         elif is_last:
-            bits.append(f"arrivo {arr}")
+            bits.append(t("gui_arr_full", t=arr))
         elif i == 0:
-            bits.append(f"partenza {dep}")
+            bits.append(t("gui_dep_full", t=dep))
         if plat:
-            bits.append(f"bin {plat}")
+            bits.append(t("gui_bin", p=plat))
         rec["detail"].configure(text="  •  ".join(bits))
         rec["delay"].configure(text=f"{dl:+d} min" if (dl and not cancelled) else "",
                                 fg=delay_hex(dl))
@@ -1416,11 +1418,11 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
             state["tl_rows"] = []
             for w in tl.winfo_children():
                 w.destroy()
-            tk.Label(tl, text="Nessuna fermata.", font=("Segoe UI", 10),
+            tk.Label(tl, text=t("gui_no_stops"), font=("Segoe UI", 10),
                      bg=CARD, fg=SUB, pady=12).pack()
             return 0, 0, {"frac": 0.0, "seg": -1, "seg_p": 0.0, "dwell": False}
         at, now, eff = position(sts, train_delay)
-        tl_count_var.set(f"{n} fermate")
+        tl_count_var.set(t("gui_n_stops", n=n))
         # posizione frazionaria sul segmento (come la timeline Flutter):
         # fermo in stazione (dwell) oppure in tratta con % del segmento
         arrs, deps = [], []
@@ -1504,8 +1506,8 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
                                   data.get('tripNumber') or data.get('trainNumber') or num))
         route_var.set(f"{stop_name(data.get('origin'))}  →  {stop_name(data.get('destination'))}")
         # pill di stato bianca con testo colorato (segno sempre corretto)
-        delay_var.set("IN ORARIO" if d == 0
-                      else (f"RITARDO +{d} MIN" if d > 0 else f"ANTICIPO {d} MIN"))
+        delay_var.set(t("gui_on_time") if d == 0
+                      else (t("gui_delay", d=d) if d > 0 else t("gui_early", d=d)))
         delay_lbl.configure(fg="#15803D" if d <= 0 else ("#B45309" if d <= 5 else "#DC2626"))
         _plat = str(data.get("platform") or "").strip()
         plat_var.set(f"BIN {_plat}" if _plat else "")
@@ -1521,8 +1523,8 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
                    if isinstance(s, dict)]
         done = (at + 1) if at >= 0 else 0
         _src = state.get("delay_src", "")
-        _suffix = f"  ·  RITARDO DA {_src.upper()}" if _src.startswith("bacheca") else ""
-        prog_lbl_var.set(f"PERCORSO · {done} DI {n} FERMATE{_suffix}")
+        _suffix = f"  ·  {t('gui_delay_from', src=_src.upper())}" if _src.startswith("bacheca") else ""
+        prog_lbl_var.set(t("gui_route_done", done=done, n=n) + _suffix)
         pct_var.set(f"{int(frac * 100)}%")
         try:
             bar.delete("all")
@@ -1534,9 +1536,9 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
         if n and at == -1:
             t0 = fmt_time(sts_all[0].get("scheduledDeparture") or sts_all[0].get("departure")
                           or sts_all[0].get("time")) if sts_all else "—"
-            state_var.set(f"Treno fermo in stazione · partenza {t0}")
+            state_var.set(t("gui_stop_wait", t=t0))
         elif n and at == n - 1:
-            state_var.set("Corsa terminata · treno arrivato a destinazione")
+            state_var.set(t("gui_stop_done"))
         elif n and 0 <= at < n:
             cur = sts_all[at]
             cn = str(cur.get("station") or cur.get("stop") or cur.get("stationName")
@@ -1545,11 +1547,11 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
                 nx = sts_all[seg + 1]
                 nn = str(nx.get("station") or nx.get("stop") or nx.get("stationName")
                          or nx.get("name") or "?")
-                state_var.set(f"In viaggio · {cn} → {nn} · {int(seg_p * 100)}%")
+                state_var.set(t("gui_stop_travel", a=cn, b=nn, p=int(seg_p * 100)))
             elif pos.get("dwell"):
-                state_var.set(f"Fermo in stazione · {cn}")
+                state_var.set(t("gui_stop_dwell", s=cn))
             else:
-                state_var.set(f"In viaggio · ultima fermata {cn}")
+                state_var.set(t("gui_stop_last", s=cn))
         else:
             state_var.set("")
         # prossima fermata
@@ -1563,17 +1565,17 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
             next_var.set(nm)
             bits = []
             if nt and nt != "—":
-                bits.append(f"ore {nt}")
+                bits.append(t("gui_at", t=nt))
             if pl:
-                bits.append(f"binario {pl}")
+                bits.append(t("gui_plat", p=pl))
             next_sub_var.set("  •  ".join(bits))
         elif n and at == n - 1:
-            next_var.set("Destinazione raggiunta")
+            next_var.set(t("gui_dest_done"))
             next_sub_var.set("")
         else:
             next_var.set("—")
             next_sub_var.set("")
-        upLbl_var.set(f"Aggiornato {datetime.now().strftime('%H:%M:%S')}")
+        upLbl_var.set(t("gui_updated", t=datetime.now().strftime('%H:%M:%S')))
         try:
             _sync_scroll()
         except Exception:
@@ -1592,7 +1594,7 @@ def open_timeline_tk(trip_id, country, trip_base=None, board_base=None):
                                            "destination": stop_name(state["trip"].get("destination")),
                                            "country": country, "tripId": trip_id}})
                 v = res.get("viewers") if isinstance(res, dict) else None
-                viewers_var.set(f"● {v} online" if isinstance(v, int) and v > 0 else "")
+                viewers_var.set(t("gui_online", v=v) if isinstance(v, int) and v > 0 else "")
         except Exception:
             pass
         if alive["on"]:
@@ -1639,7 +1641,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
     stops = [s for s in (trip.get("stops") or trip.get("stopovers") or [])
              if isinstance(s, dict)]
     if not stops:
-        return p_warn("Trip senza fermate.")
+        return p_warn(t("gui_no_stops"))
 
     BG, SURFACE, CARD, CARD_HL = "#0A0C10", "#11151C", "#171D27", "#232C3B"
     TXT, SUB, TERT = "#F2F5F9", "#8A94A6", "#4A5468"
@@ -1775,7 +1777,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
 
     hinfo = ctk.CTkFrame(hrow, fg_color="transparent")
     hinfo.pack(side="left", padx=(14, 0), fill="x", expand=True)
-    over_var = ctk.StringVar(value=f"TRENO · {country}".strip())
+    over_var = ctk.StringVar(value=t("gui_train", c=country))
     ctk.CTkLabel(hinfo, textvariable=over_var, font=FT_OVER,
                  text_color="white", fg_color="transparent").pack(anchor="w")
     title_var = ctk.StringVar(value=train_label(line, num))
@@ -1816,23 +1818,23 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
     ctk.CTkFrame(root, fg_color="#232B38", height=1, corner_radius=0).pack(
         side="bottom", fill="x")
     upLbl_var = ctk.StringVar(value="")
-    live_var = ctk.StringVar(value="LIVE ON")
+    live_var = ctk.StringVar(value=t("gui_live_on"))
     bottom = ctk.CTkFrame(root, fg_color=SURFACE, corner_radius=0)
     bottom.pack(side="bottom", fill="x")
     brow = ctk.CTkFrame(bottom, fg_color="transparent")
     brow.pack(fill="x", padx=14, pady=12)
-    ctk.CTkButton(brow, text="Aggiorna", font=FT_BTN, fg_color=hexcol,
+    ctk.CTkButton(brow, text=t("gui_update"), font=FT_BTN, fg_color=hexcol,
                   hover_color=shade(hexcol, 0.85), text_color="white",
                   corner_radius=10, height=38,
                   command=lambda: refresh()).pack(side="left")
 
     def toggle_live():
         alive["live"] = not alive["live"]
-        live_var.set("LIVE ON" if alive["live"] else "LIVE OFF")
+        live_var.set(t("gui_live_on") if alive["live"] else t("gui_live_off"))
     ctk.CTkButton(brow, textvariable=live_var, font=FT_BTN, fg_color=CARD,
                   hover_color=CARD_HL, text_color=TXT, corner_radius=10,
                   height=38, command=toggle_live).pack(side="left", padx=(8, 0))
-    ctk.CTkButton(brow, text="Chiudi", font=FT_BTN, fg_color=CARD,
+    ctk.CTkButton(brow, text=t("gui_close"), font=FT_BTN, fg_color=CARD,
                   hover_color=CARD_HL, text_color=TXT, corner_radius=10,
                   height=38, command=on_close).pack(side="right")
     ctk.CTkLabel(brow, textvariable=upLbl_var, font=FT_SUB,
@@ -1893,7 +1895,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
         side="left", fill="y")
     nxt_in = ctk.CTkFrame(nxt, fg_color="transparent")
     nxt_in.pack(side="left", fill="both", expand=True, padx=14, pady=12)
-    ctk.CTkLabel(nxt_in, text="PROSSIMA FERMATA", font=FT_SEC,
+    ctk.CTkLabel(nxt_in, text=t("gui_next"), font=FT_SEC,
                  text_color=hexcol, fg_color="transparent").pack(anchor="w")
     next_var = ctk.StringVar(value="")
     ctk.CTkLabel(nxt_in, textvariable=next_var,
@@ -1906,7 +1908,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
                  justify="left").pack(anchor="w", pady=(2, 0))
 
     # -- Azioni --
-    ctk.CTkLabel(content, text="AZIONI RAPIDE", font=FT_SEC, text_color=SUB,
+    ctk.CTkLabel(content, text=t("gui_actions"), font=FT_SEC, text_color=SUB,
                  fg_color="transparent").pack(anchor="w", pady=(18, 8))
     grid = ctk.CTkFrame(content, fg_color="transparent")
     grid.pack(fill="x")
@@ -1923,7 +1925,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
             d = get_json(f"{BASE}/api/stats/train/{urllib.parse.quote(cat)}/"
                          f"{urllib.parse.quote(num)}")
         except Exception as e:
-            return toast(f"Statistiche non disponibili: {e}", bad=True)
+            return toast(t("gui_e_stats", e=e), bad=True)
         rep = (d.get("data") if isinstance(d, dict) else None) or d or {}
         m = rep.get("metrics") if isinstance(rep, dict) else None or {}
         ins = rep.get("insights") if isinstance(rep, dict) else None or {}
@@ -1931,15 +1933,15 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
             w.destroy()
         box = ctk.CTkFrame(stats_box, fg_color="transparent")
         box.pack(fill="x", padx=14, pady=12)
-        ctk.CTkLabel(box, text="STATISTICHE TRENO", font=FT_SEC,
+        ctk.CTkLabel(box, text=t("gui_stats_title"), font=FT_SEC,
                      text_color=SUB, fg_color="transparent").pack(anchor="w", pady=(0, 6))
-        for k, v in [("Affidabilità", str(m.get("reliabilityScore", "—"))),
-                     ("Trend", str(m.get("behaviorTrend", "—"))),
-                     ("Ritardo medio", f"{m.get('averageNetDelayChangeMinutes', '—')} min"),
-                     ("Cancellazioni", f"{m.get('cancellationRatePercentage', '—')}%"),
-                     ("Viaggi analizzati", str(m.get("totalTripsAnalyzed", "—"))),
-                     ("Giorno peggiore", str(ins.get("worstDayOfWeek", "—"))),
-                     ("Stazione critica", str(ins.get("criticalBottleneckStation", "—")))]:
+        for k, v in [(t("gui_s_rel"), str(m.get("reliabilityScore", "—"))),
+                     (t("gui_s_trend"), str(m.get("behaviorTrend", "—"))),
+                     (t("gui_s_avg"), f"{m.get('averageNetDelayChangeMinutes', '—')} min"),
+                     (t("gui_s_canc"), f"{m.get('cancellationRatePercentage', '—')}%"),
+                     (t("gui_s_trips"), str(m.get("totalTripsAnalyzed", "—"))),
+                     (t("gui_s_day"), str(ins.get("worstDayOfWeek", "—"))),
+                     (t("gui_s_station"), str(ins.get("criticalBottleneckStation", "—")))]:
             r = ctk.CTkFrame(box, fg_color="transparent")
             r.pack(fill="x", pady=2)
             ctk.CTkLabel(r, text=k, font=FT_SUB, text_color=SUB,
@@ -1953,7 +1955,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
         try:
             d = get_json(f"{BASE}/api/track-trip/{urllib.parse.quote(trip_id)}")
         except Exception as e:
-            return toast(f"Mappa non disponibile: {e}", bad=True)
+            return toast(t("gui_e_map", e=e), bad=True)
         dd = (d.get("data") if isinstance(d, dict) else None) or d or {}
         pos = dd.get("trainPosition") if isinstance(dd, dict) else None
         msg = f"Fermate tracciate: {len(dd.get('stops', []) if isinstance(dd, dict) else [])}"
@@ -1965,12 +1967,12 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
         try:
             url = sheet_share_link(trip_id, country, state["trip"])
         except Exception as e:
-            return toast(f"Condivisione fallita: {e}", bad=True)
+            return toast(t("gui_e_share", e=e), bad=True)
         if not url:
-            return toast("Condivisione fallita", bad=True)
+            return toast(t("gui_share_ko"), bad=True)
         root.clipboard_clear()
         root.clipboard_append(url)
-        toast(f"Link copiato negli appunti:\n{url}")
+        toast(t("gui_share_ok", url=url))
 
     def do_social():
         nick = simpledialog.askstring("Social", "Nickname:", parent=root)
@@ -1984,14 +1986,14 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
                                        "destination": stop_name(state["trip"].get("destination")),
                                        "country": country}, "nick": nick})
         except Exception as e:
-            return toast(f"Social: {e}", bad=True)
-        toast(f"Pubblicato: {res}")
+            return toast(t("gui_e_social", e=e), bad=True)
+        toast(t("gui_published", res=res))
 
     def do_save():
         os.makedirs(CACHE_DIR, exist_ok=True)
         out = cache_path("train", trip_id)
         okw = save_json_file(out, state["trip"])
-        toast(f"Salvato offline:\n{out}" if okw else "Salvataggio fallito", bad=not okw)
+        toast(t("gui_save_ok", out=out) if okw else t("gui_save_ko"), bad=not okw)
 
     def do_fav():
         fav_add("train", {"number": num,
@@ -1999,14 +2001,14 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
                           "destination": stop_name(state["trip"].get("destination")),
                           "name": f"Treno {num}",
                           "routeId": trip_id, "provider": country})
-        toast("Aggiunto ai preferiti")
+        toast(t("gui_fav_added"))
 
     def do_alerts():
         msgs = collect_messages(state["trip"])
         if not msgs:
-            return toast("Nessun avviso per questo treno.")
+            return toast(t("gui_no_alerts"))
         win = ctk.CTkToplevel(root)
-        win.title(f"Avvisi ({len(msgs)})")
+        win.title(t("gui_alerts_t", n=len(msgs)))
         win.geometry("480x400")
         txt = ctk.CTkTextbox(win, font=FT_SUB, fg_color=CARD, text_color=TXT,
                              corner_radius=10)
@@ -2027,20 +2029,20 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
                             {"tripId": trip_id, "country": country, "stops": payload},
                             timeout=50)
         except Exception as e:
-            return toast(f"Match: {e}", bad=True)
+            return toast(t("gui_e_match", e=e), bad=True)
         d = res.get("data") if isinstance(res, dict) else None
         ms = d.get("matches", []) if isinstance(d, dict) else []
         okm = bool(isinstance(d, dict) and d.get("isMatched") and any(
             isinstance(x, dict) and x.get("matched") for x in ms))
         det = ", ".join(str((x if isinstance(x, dict) else {}).get("country", "?"))
                         for x in ms[:5])
-        match_var.set(("✓ match: " + det) if okm else "nessun match")
-        toast(("Match trovato: " + det) if okm else "Nessun match multi-paese.")
+        match_var.set(t("gui_match_ok", d=det) if okm else t("gui_match_ko"))
+        toast(t("gui_match_found", d=det) if okm else t("gui_match_none"))
 
-    for i, (label, fn) in enumerate([("Statistiche", do_stats), ("Mappa", do_map),
-                                     ("Condividi", do_share), ("Social", do_social),
-                                     ("Salva", do_save), ("Avvisi", do_alerts),
-                                     ("Preferito", do_fav), ("Match", do_match)]):
+    _btns = t("gui_btns")
+    for i, (label, fn) in enumerate([(b, f) for b, f in zip(
+            _btns, [do_stats, do_map, do_share, do_social,
+                    do_save, do_alerts, do_fav, do_match])]):
         ctk.CTkButton(grid, text=label, font=FT_BTN, fg_color=CARD,
                       hover_color=CARD_HL, text_color=TXT, corner_radius=10,
                       height=42, command=fn).grid(row=i // 2, column=i % 2,
@@ -2052,7 +2054,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
     # -- Timeline --
     tl_head = ctk.CTkFrame(content, fg_color="transparent")
     tl_head.pack(fill="x", pady=(18, 8))
-    ctk.CTkLabel(tl_head, text="FERMATE", font=FT_SEC, text_color=SUB,
+    ctk.CTkLabel(tl_head, text=t("gui_stops"), font=FT_SEC, text_color=SUB,
                  fg_color="transparent").pack(side="left")
     tl_count_var = ctk.StringVar(value="")
     ctk.CTkLabel(tl_head, textvariable=tl_count_var, font=FT_SUB,
@@ -2084,14 +2086,14 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
             t1 = ctk.CTkLabel(tcol, font=FT_TIME, text_color=TXT,
                               fg_color="transparent")
             t1.pack(anchor="e", pady=(14, 0))
-            ctk.CTkLabel(tcol, text="partenza", font=FT_SUB, text_color=TERT,
+            ctk.CTkLabel(tcol, text=t("gui_dep"), font=FT_SUB, text_color=TERT,
                          fg_color="transparent").pack(anchor="e")
             t2 = None
         elif is_last:
             t1 = ctk.CTkLabel(tcol, font=FT_TIME, text_color=TXT,
                               fg_color="transparent")
             t1.pack(anchor="e", pady=(14, 0))
-            ctk.CTkLabel(tcol, text="arrivo", font=FT_SUB, text_color=TERT,
+            ctk.CTkLabel(tcol, text=t("gui_arr"), font=FT_SUB, text_color=TERT,
                          fg_color="transparent").pack(anchor="e")
             t2 = None
         else:
@@ -2197,15 +2199,15 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
             in_travel = seg == i and not cancelled
         marker_p = seg_p if (seg == i and not is_last) else None
         if cancelled:
-            st, st_fg = "SOPPRESSA", ERR
+            st, st_fg = t("gui_cancelled"), ERR
         elif at == -1 and i == 0:
-            st, st_fg = "NON PARTITO", OK
+            st, st_fg = t("gui_not_left"), OK
         elif at == n - 1 and is_last:
-            st, st_fg = "ARRIVATO", OK
+            st, st_fg = t("gui_arrived"), OK
         elif is_cur:
-            st, st_fg = "QUI", OK
+            st, st_fg = t("gui_here"), OK
         elif in_travel:
-            st, st_fg = "IN VIAGGIO", OK
+            st, st_fg = t("gui_travel"), OK
         else:
             st, st_fg = "", SUB
         rec["vis"].update(at=at, passed=passed, is_cur=is_cur,
@@ -2226,11 +2228,11 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
         if arr != dep and i != 0 and not is_last:
             bits.append(f"{arr} → {dep}")
         elif is_last:
-            bits.append(f"arrivo {arr}")
+            bits.append(t("gui_arr_full", t=arr))
         elif i == 0:
-            bits.append(f"partenza {dep}")
+            bits.append(t("gui_dep_full", t=dep))
         if plat:
-            bits.append(f"bin {plat}")
+            bits.append(t("gui_bin", p=plat))
         rec["detail"].configure(text="  •  ".join(bits))
         rec["delay"].configure(text=f"{dl:+d} min" if (dl and not cancelled) else "",
                                 text_color=delay_hex(dl))
@@ -2245,11 +2247,11 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
             state["tl_rows"] = []
             for w in tl.winfo_children():
                 w.destroy()
-            ctk.CTkLabel(tl, text="Nessuna fermata.", font=FT_SUB,
+            ctk.CTkLabel(tl, text=t("gui_no_stops"), font=FT_SUB,
                          text_color=SUB, fg_color="transparent").pack(pady=12)
             return 0, 0, {"frac": 0.0, "seg": -1, "seg_p": 0.0, "dwell": False}
         at, now, eff = position(sts, train_delay)
-        tl_count_var.set(f"{n} fermate")
+        tl_count_var.set(t("gui_n_stops", n=n))
         arrs, deps = [], []
         for s in sts:
             a, dpt = stop_eff(s, train_delay)
@@ -2327,8 +2329,8 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
         title_var.set(train_label(data.get('line') or data.get('category') or line,
                                   data.get('tripNumber') or data.get('trainNumber') or num))
         route_var.set(f"{stop_name(data.get('origin'))}  →  {stop_name(data.get('destination'))}")
-        delay_var.set("IN ORARIO" if d == 0
-                      else (f"RITARDO +{d} MIN" if d > 0 else f"ANTICIPO {d} MIN"))
+        delay_var.set(t("gui_on_time") if d == 0
+                      else (t("gui_delay", d=d) if d > 0 else t("gui_early", d=d)))
         delay_lbl.configure(text_color="#15803D" if d <= 0 else ("#B45309" if d <= 5 else "#DC2626"))
         _plat = str(data.get("platform") or "").strip()
         plat_var.set(f"BIN {_plat}" if _plat else "")
@@ -2345,8 +2347,8 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
                    if isinstance(s, dict)]
         done = (at + 1) if at >= 0 else 0
         _src = state.get("delay_src", "")
-        _suffix = f"  ·  RITARDO DA {_src.upper()}" if _src.startswith("bacheca") else ""
-        prog_lbl_var.set(f"PERCORSO · {done} DI {n} FERMATE{_suffix}")
+        _suffix = f"  ·  {t('gui_delay_from', src=_src.upper())}" if _src.startswith("bacheca") else ""
+        prog_lbl_var.set(t("gui_route_done", done=done, n=n) + _suffix)
         pct_var.set(f"{int(frac * 100)}%")
         try:
             bar.set(max(0.0, min(1.0, frac)))
@@ -2355,9 +2357,9 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
         if n and at == -1:
             t0 = fmt_time(sts_all[0].get("scheduledDeparture") or sts_all[0].get("departure")
                           or sts_all[0].get("time")) if sts_all else "—"
-            state_var.set(f"Treno fermo in stazione · partenza {t0}")
+            state_var.set(t("gui_stop_wait", t=t0))
         elif n and at == n - 1:
-            state_var.set("Corsa terminata · treno arrivato a destinazione")
+            state_var.set(t("gui_stop_done"))
         elif n and 0 <= at < n:
             cur = sts_all[at]
             cn = str(cur.get("station") or cur.get("stop") or cur.get("stationName")
@@ -2366,11 +2368,11 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
                 nx = sts_all[seg + 1]
                 nn = str(nx.get("station") or nx.get("stop") or nx.get("stationName")
                          or nx.get("name") or "?")
-                state_var.set(f"In viaggio · {cn} → {nn} · {int(seg_p * 100)}%")
+                state_var.set(t("gui_stop_travel", a=cn, b=nn, p=int(seg_p * 100)))
             elif pos.get("dwell"):
-                state_var.set(f"Fermo in stazione · {cn}")
+                state_var.set(t("gui_stop_dwell", s=cn))
             else:
-                state_var.set(f"In viaggio · ultima fermata {cn}")
+                state_var.set(t("gui_stop_last", s=cn))
         else:
             state_var.set("")
         if n and 0 <= at + 1 < n:
@@ -2383,17 +2385,17 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
             next_var.set(nm)
             bits = []
             if nt and nt != "—":
-                bits.append(f"ore {nt}")
+                bits.append(t("gui_at", t=nt))
             if pl:
-                bits.append(f"binario {pl}")
+                bits.append(t("gui_plat", p=pl))
             next_sub_var.set("  •  ".join(bits))
         elif n and at == n - 1:
-            next_var.set("Destinazione raggiunta")
+            next_var.set(t("gui_dest_done"))
             next_sub_var.set("")
         else:
             next_var.set("—")
             next_sub_var.set("")
-        upLbl_var.set(f"Aggiornato {datetime.now().strftime('%H:%M:%S')}")
+        upLbl_var.set(t("gui_updated", t=datetime.now().strftime('%H:%M:%S')))
         _sync_pad()
         root.after_idle(_fix_scroll)
 
@@ -2410,7 +2412,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
                                            "destination": stop_name(state["trip"].get("destination")),
                                            "country": country, "tripId": trip_id}})
                 v = res.get("viewers") if isinstance(res, dict) else None
-                viewers_var.set(f"● {v} online" if isinstance(v, int) and v > 0 else "")
+                viewers_var.set(t("gui_online", v=v) if isinstance(v, int) and v > 0 else "")
         except Exception:
             pass
         if alive["on"]:
@@ -2437,7 +2439,7 @@ def open_timeline_ctk(trip_id, country, trip_base=None, board_base=None):
     root.mainloop()
 
 def train_trip(trip_id, country):
-    p_title(f"🚂 Trip {trip_id} [{country}]")
+    p_title(t("trip_title", t=trip_id, c=country))
     url = f"{TRAINBOARD}/{country}/trip?tripId={urllib.parse.quote(trip_id)}"
     p_dim(f"GET {url}")
     try:
@@ -2445,12 +2447,12 @@ def train_trip(trip_id, country):
     except Exception as e:
         return p_err(f"Errore trip: {e}")
     e = (data.get("data") if isinstance(data, dict) else None) or data or {}
-    print(f"  {bold('Linea:')} {e.get('line') or e.get('category') or '—'}")
-    print(f"  {bold('Destinazione:')} {stop_name(e.get('destination')) or '—'}")
+    print(f"  {bold(t('trip_line'))} {e.get('line') or e.get('category') or '—'}")
+    print(f"  {bold(t('det_dest'))} {stop_name(e.get('destination')) or '—'}")
     print_timeline(e.get("stops") or e.get("stopovers") or [])
 
 def train_number(q):
-    p_title(f'🔎 Treni live · filtro "{q}"')
+    p_title(t("live_title", q=q))
     url = ("https://data.cuzimmartin.dev/train-map?north=85&south=-5&east=91"
            "&west=-64&duration=300&results=1000&polylines=false")
     p_dim(f"GET {url}")
@@ -2474,7 +2476,7 @@ def train_number(q):
     p_dim(f"Trovati: {len(found)} (mostrati max 20)")
 
 def fal(station_id):
-    p_title(f"🟣 FAL · stazione {station_id}")
+    p_title(t("fal_title", s=station_id))
     url = f"{BASE}/api/fal/stop-updates?stationId={urllib.parse.quote(station_id)}"
     p_dim(f"GET {url}")
     try:
@@ -2578,7 +2580,7 @@ def bus_stops(provider, paese):
     except Exception as e:
         return p_err(f"Errore fermate: {e}")
     if not lst:
-        return p_warn("Nessuna fermata.")
+        return p_warn(t("bus_no_stops"))
     for s in lst[:30]:
         sid = s.get("stopId") or "?"
         name = s.get("stopName") or "?"
@@ -3041,7 +3043,7 @@ def presence(cmd, key="", limit=20):
 
 # -- REGIONALI ----------------------------------------------------------------
 def reg_providers(country):
-    p_title(f"🏳️ Provider regionali · {country}")
+    p_title(t("reg_providers", c=country))
     try:
         data = get_json(f"{BASE}/api/train/regional_providers/{urllib.parse.quote(country)}")
     except Exception as e:
@@ -3081,7 +3083,7 @@ def fetch_reg_board(country, prefix, station_id, arrivi):
     return url, base, rows
 
 def reg_stations(country, prefix, q=""):
-    p_title(f"🏳️ Stazioni regionali {prefix} · '{q}'")
+    p_title(t("reg_stations", p=prefix, q=q))
     try:
         url, _, lst = fetch_reg_stations(country, prefix, q)
     except Exception as e:
@@ -3095,7 +3097,7 @@ def reg_stations(country, prefix, q=""):
 
 def reg_board(country, prefix, station_id, arrivi):
     ep = "arrivals" if arrivi else "departures"
-    p_title(f"🏳️ {'Arrivi' if arrivi else 'Partenze'} regionali · {station_id}")
+    p_title(t("reg_board_arr" if arrivi else "reg_board_dep", sid=station_id))
     try:
         url, _, lst = fetch_reg_board(country, prefix, station_id, arrivi)
     except Exception as e:
@@ -3115,7 +3117,7 @@ def reg_news(country, prefix):
 
 def reg_trip(country, prefix, trip_id):
     base = reg_base(country, prefix)
-    p_title(f"🏳️ Trip regionale {trip_id}")
+    p_title(t("reg_trip", t=trip_id))
     for url in (f"{base}/trip/{urllib.parse.quote(trip_id)}",
                 f"{base}/trip?tripId={urllib.parse.quote(trip_id)}"):
         try:
@@ -3408,9 +3410,9 @@ def auth_login(email, password):
     user = (res.get("user") or res.get("data") or {}) if isinstance(res, dict) else {}
     if user:
         save_json_file(SESS_FILE, {"user": user, "token": res.get("token")})
-        p_ok(f"Login ok: {user.get('email') or user.get('nickname')}")
+        p_ok(t("login_ok", u=user.get('email') or user.get('nickname')))
     else:
-        p_warn("Credenziali non valide.")
+        p_warn(t("login_ko"))
 
 def auth_register(email, password, nick):
     try:
@@ -3421,7 +3423,7 @@ def auth_register(email, password, nick):
     user = (res.get("user") or {}) if isinstance(res, dict) else {}
     if user:
         save_json_file(SESS_FILE, {"user": user, "token": res.get("token")})
-        p_ok(f"Registrato: {user.get('email')}")
+        p_ok(t("reg_ok", e=user.get('email')))
     else:
         p_warn(f"Risposta: {res}")
 
@@ -3429,34 +3431,34 @@ def auth_available(nick, except_id=""):
     q = f"?nickname={urllib.parse.quote(nick)}" + (f"&exceptId={except_id}" if except_id else "")
     try:
         data = get_json(f"{BASE}/api/users/nickname-available{q}", timeout=8)
-        p_ok("Nickname disponibile.") if (data.get("available") if isinstance(data, dict) else False) \
-            else p_warn("Nickname occupato.")
+        p_ok(t("nick_ok")) if (data.get("available") if isinstance(data, dict) else False) \
+            else p_warn(t("nick_ko"))
     except Exception as e:
         p_err(f"Errore: {e}")
 
 def auth_profile(nick):
     s = session()
     if not s.get("token"):
-        return p_warn("Devi fare login prima.")
+        return p_warn(t("need_login"))
     try:
         res = api_patch(f"{BASE}/api/auth/profile", {"nickname": nick}, token=s["token"])
         s["user"] = res.get("user", s.get("user"))
         save_json_file(SESS_FILE, s)
-        p_ok(f"Profilo aggiornato: {nick}")
+        p_ok(t("prof_ok", n=nick))
     except Exception as e:
         p_err(f"Profilo: {e}")
 
 def auth_delete(password):
     s = session()
     if not s.get("token"):
-        return p_warn("Devi fare login prima.")
+        return p_warn(t("need_login"))
     try:
         status, _ = api_delete(f"{BASE}/api/auth/account", {"password": password}, token=s["token"])
         if status == 200:
             save_json_file(SESS_FILE, {})
-            p_ok("Account eliminato, sessione pulita.")
+            p_ok(t("del_ok"))
         else:
-            p_warn("Eliminazione fallita.")
+            p_warn(t("del_ko"))
     except Exception as e:
         p_err(f"Delete: {e}")
 
@@ -3464,13 +3466,13 @@ def auth_status():
     s = session()
     u = s.get("user") or {}
     if u:
-        p_ok(f"Loggato come {u.get('email') or u.get('nickname')} (nickname: {u.get('nickname')})")
+        p_ok(t("logged_as", e=u.get('email') or u.get('nickname'), n=u.get('nickname')))
     else:
-        p_info("Nessuna sessione. Usa: auth --login <email> <pw>")
+        p_info(t("no_session"))
 
 def auth_logout():
     save_json_file(SESS_FILE, {})
-    p_ok("Logout, sessione pulita.")
+    p_ok(t("logout_ok"))
 
 # -- PREFERITI (stessi id/modelli dell'app + sync database via API) ------------
 # Riconoscimento identico all'app (favorites_provider.dart):
@@ -3550,7 +3552,7 @@ def fav_remote_list():
     try:
         res = _fav_get(FAV_API, tok)
     except Exception as e:
-        p_err(f"Preferiti cloud: {e}")
+        p_err(f"{t('fav_cloud')}: {e}")
         return None
     out = []
     for item in (res.get("favorites") or []):
@@ -3591,8 +3593,8 @@ def _fav_describe(f):
 
 def fav_open(fav):
     """Apre un preferito con la vista giusta in base al tipo (come l'app)."""
-    t, d = _fav_norm(fav)
-    if t == "train":
+    ft, d = _fav_norm(fav)
+    if ft == "train":
         num = str(d.get("trainNumber") or "")
         trip_id = str(d.get("routeId") or "")
         country = str(d.get("provider") or "IT").upper() or "IT"
@@ -3618,25 +3620,25 @@ def fav_open(fav):
         if best:
             c = pick_country()
             return open_timeline_gui(str(best["tripId"]), c)
-        sid = ask("Treno non live, ID stazione per il dettaglio (invio = annulla): ")
+        sid = ask(t("fav_train_fallback"))
         if sid:
             c = pick_country()
             return train_details(num, sid, c)
-        return p_warn("Nessun trip disponibile per questo preferito.")
-    if t == "stop":
+        return p_warn(t("fav_no_trip"))
+    if ft == "stop":
         st, code = d.get("stopType"), str(d.get("code") or "")
         if st == "trainStation":
             c = (d.get("country") or "IT").upper()
-            m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+            m = ask(t("dep_arr")).strip() or "1"
             return train_board(code, c, m == "2")
         if st == "airport":
-            m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+            m = ask(t("dep_arr")).strip() or "1"
             return airport(code.upper(), m == "2")
-        prov = str(d.get("provider") or "").strip() or ask("Provider bus (es. bari): ").strip()
+        prov = str(d.get("provider") or "").strip() or ask(t("fav_bus_prov")).strip()
         if not prov:
-            return p_warn("Serve il provider per la fermata bus.")
+            return p_warn(t("fav_need_prov"))
         return bus_departures(prov, code, "")
-    if t == "busLine":
+    if ft == "busLine":
         prov, line = str(d.get("provider") or "bari"), str(d.get("lineCode") or "")
         p_title(f"🚌 Linea {line} · {prov}")
         try:
@@ -3663,70 +3665,85 @@ def fav_open(fav):
         if found:
             print(f"  {c_bus(line)} {found.get('name') or found.get('description') or ''}")
         else:
-            p_warn("Linea non trovata tra le prime righe del provider.")
+            p_warn(t("fav_no_line"))
         return bus_vehicles(prov, "")
-    return p_warn(f"Tipo preferito sconosciuto: {t}")
+    return p_warn(t("fav_unknown", t=ft))
 
 def account_section():
-    p_title("👤 Account")
+    p_title(t("acc_title"))
     while True:
         s = session()
         u = s.get("user") or {}
         if u:
-            p_ok(f"Loggato come {u.get('email') or u.get('nickname')} "
-                 f"(nick: {u.get('nickname')}, id: {u.get('id')})")
+            p_ok(t("acc_in", e=u.get('email') or u.get('nickname'),
+                   n=u.get('nickname'), i=u.get('id')))
         else:
-            p_info("Non loggato (i preferiti restano locali).")
-        print(f"  {ok('[1]')} Stato  {ok('[2]')} Login  {ok('[3]')} Registra  "
-              f"{ok('[4]')} Cambia nick  {ok('[5]')} Verifica nick  "
-              f"{ok('[6]')} Logout  {warn('[7]')} Elimina account  {dim('[0] Indietro')}")
-        c = (ask("Scelta [0-7]: ") or "0").strip()
+            p_info(t("acc_out"))
+        print(f"  {t('acc_menu')}")
+        c = (ask(t("acc_choice")) or "0").strip()
         if c == "0":
             return
         elif c == "1":
             auth_status()
         elif c == "2":
-            e, p = ask("Email: "), ask("Password: ")
+            e, p = ask(t("ask_email")), ask(t("ask_pw"))
             if e and p:
                 auth_login(e, p)
         elif c == "3":
-            e, p, n = ask("Email: "), ask("Password: "), ask("Nickname: ")
+            e, p, n = ask(t("ask_email")), ask(t("ask_pw")), ask(t("ask_nick"))
             if e and p and n:
                 auth_register(e, p, n)
         elif c == "4":
-            n = ask("Nuovo nickname: ")
+            n = ask(t("ask_new_nick"))
             if n:
                 auth_profile(n)
         elif c == "5":
-            n = ask("Nickname da verificare: ")
+            n = ask(t("ask_check_nick"))
             if n:
                 auth_available(n)
         elif c == "6":
             auth_logout()
         elif c == "7":
-            p = ask("Password per confermare l'eliminazione (invio = annulla): ")
+            p = ask(t("ask_del_pw"))
             if p:
                 auth_delete(p)
         else:
-            p_warn("Numero non valido.")
+            p_warn(t("invalid_num"))
+
+def config_section():
+    p_title(t("cfg_title"))
+    while True:
+        pinned = str(app_state().get("lang") or "").lower()
+        if pinned in LANGS:
+            p_info(t("cfg_cur", lang=LANG_NAMES.get(pinned, pinned)))
+        else:
+            eff = system_lang()
+            p_info(t("cfg_auto_is", lang=LANG_NAMES.get(eff, eff)))
+        print(f"  {ok('[1]')} {t('cfg_change')}  {dim('[0] ' + t('t_back'))}")
+        c = (ask(t("cfg_choice")) or "0").strip()
+        if c == "0":
+            return
+        elif c == "1":
+            pick_language()
+        else:
+            p_warn(t("invalid_num"))
 
 def favorites_section():
-    p_title("⭐ Preferiti")
+    p_title(t("fav_title"))
     while True:
         tok, _ = _fav_auth()
         favs = fav_remote_list() if tok else fav_all()
         if favs is None:
             return
-        p_dim("Dal database (login attivo)." if tok
-              else "File locale (fai login per il database).")
+        p_dim(t("fav_db") if tok else t("fav_local"))
         if not favs:
-            p_info("Nessun preferito.")
+            p_info(t("fav_empty"))
             return
         for i, f in enumerate(favs, 1):
-            t, _ = _fav_norm(f)
-            print(f"  {ok(f'[{i}]')} {_fav_describe(f)}  {dim(str(t))}")
-        print(f"  {dim('[0] Indietro')}")
-        s = (ask(f"Numero [0-{len(favs)}]: ") or "0").strip()
+            ft, _ = _fav_norm(f)
+            print(f"  {ok(f'[{i}]')} {_fav_describe(f)}  {dim(str(ft))}")
+        print(f"  {dim('[0] ' + t('t_back'))}")
+        s = (ask(t("fav_num", n=len(favs))) or "0").strip()
         if s == "0":
             return
         try:
@@ -3734,7 +3751,7 @@ def favorites_section():
         except ValueError:
             fav = None
         if not isinstance(fav, dict):
-            p_warn("Numero non valido.")
+            p_warn(t("invalid_num"))
             continue
         fav_open(fav)
 
@@ -3742,22 +3759,22 @@ def fav_list(cloud=False):
     tok, _ = _fav_auth()
     if cloud or tok:
         if not tok:
-            return p_warn("Devi fare login prima (auth --login <email> <pw>).")
-        p_title("⭐ Preferiti dal database")
+            return p_warn(t("need_login") + " (auth --login <email> <pw>).")
+        p_title(t("fav_title"))
         favs = fav_remote_list()
         if favs is None:
             return
     else:
-        p_title("⭐ Preferiti locali")
+        p_title(t("fav_title"))
         favs = fav_all()
         if tok is None:
-            p_dim("Non loggato: mostro il file locale. Fai login per il database.")
+            p_dim(t("fav_local"))
     if not favs:
-        return p_info("Nessun preferito.")
+        return p_info(t("fav_empty"))
     for f in favs:
         print(f"  [{warn(str(f.get('id', '?')))}] {ok(str(f.get('type', '')))}  "
               f"{short(_fav_describe(f), 60)}")
-    p_dim(f"Totale: {len(favs)}")
+    p_dim(t("fav_total", n=len(favs)))
 
 def fav_add(ftype, data):
     tok, uid = _fav_auth()
@@ -3768,21 +3785,21 @@ def fav_add(ftype, data):
             res = post_json(FAV_API, {"id": key, "type": ftype_name, "data": payload},
                             token=tok)
         except Exception as e:
-            return p_err(f"Salvataggio cloud: {e}")
+            return p_err(f"{t('fav_cloud_save')}: {e}")
         fav = (res.get("favorite") if isinstance(res, dict) else None) or {}
         rid = fav.get("id") or key
         favs = [f for f in fav_all() if f.get("id") != rid]
         favs.append({"id": rid, "userId": uid, "type": ftype_name,
                      "addedAt": fav.get("addedAt") or now, "data": payload})
         save_json_file(FAV_FILE, favs)
-        return p_ok(f"Salvato nel database: {rid}")
+        return p_ok(t("fav_saved_db", rid=rid))
     favs = fav_all()
     if any(f.get("id") == key for f in favs):
-        return p_warn("Già nei preferiti.")
+        return p_warn(t("fav_dup"))
     favs.append({"id": key, "userId": uid, "type": ftype_name,
                  "addedAt": now, "data": payload})
     save_json_file(FAV_FILE, favs)
-    p_ok(f"Aggiunto (locale, fai login per il cloud): {key}")
+    p_ok(t("fav_added_local", key=key))
 
 def fav_remove(fid):
     tok, _ = _fav_auth()
@@ -3790,12 +3807,12 @@ def fav_remove(fid):
         try:
             status, _ = api_delete(f"{FAV_API}/{urllib.parse.quote(fid)}", token=tok)
         except Exception as e:
-            return p_err(f"Rimozione cloud: {e}")
+            return p_err(f"{t('fav_cloud_del')}: {e}")
         if status != 200:
             return p_warn("Non rimosso dal database.")
     favs = [f for f in fav_all() if f.get("id") != fid]
     save_json_file(FAV_FILE, favs)
-    p_ok(f"Rimosso {fid}")
+    p_ok(t("fav_removed", fid=fid))
 
 def fav_check(fid):
     tok, _ = _fav_auth()
@@ -3806,19 +3823,19 @@ def fav_check(fid):
         found = any(f.get("id") == fid for f in favs)
     else:
         found = any(f.get("id") == fid for f in fav_all())
-    p_ok("Nei preferiti.") if found else p_warn("Non nei preferiti.")
+    p_ok(t("fav_is")) if found else p_warn(t("fav_is_not"))
 
 def fav_sync():
     """Scarica i preferiti dal database e li salva nel file locale."""
     tok, _ = _fav_auth()
     if not tok:
-        return p_warn("Devi fare login prima (auth --login <email> <pw>).")
+        return p_warn(t("need_login") + " (auth --login <email> <pw>).")
     favs = fav_remote_list()
     if favs is None:
         return
     save_json_file(FAV_FILE, favs)
-    p_ok(f"Sincronizzati {len(favs)} preferiti dal database.")
-    p_dim(f"Mirror locale: {FAV_FILE}")
+    p_ok(t("fav_synced", n=len(favs)))
+    p_dim(t("fav_mirror", f=FAV_FILE))
 
 # -- OFFLINE CACHE ------------------------------------------------------------
 def offline_save(ttype, ident, infile):
@@ -3896,6 +3913,797 @@ def push_recent(kind, entry, limit=8):
 def get_recent(kind):
     return [e for e in (app_state().get(kind) or []) if isinstance(e, dict)]
 
+# -- I18N (stesse 4 lingue dell'app: it/en/de/fr) ---------------------------
+LANGS = ("it", "en", "de", "fr")
+LANG_NAMES = {"it": "Italiano", "en": "English", "de": "Deutsch", "fr": "Français"}
+
+def system_lang():
+    try:
+        import locale
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            loc = (locale.getdefaultlocale()[0] or "it").lower()
+        for code in LANGS:
+            if loc.startswith(code):
+                return code
+    except Exception:
+        pass
+    return "it"
+
+def get_lang():
+    lang = str(app_state().get("lang") or "").lower()
+    if lang in LANGS:
+        return lang
+    return system_lang()
+
+def set_lang(code):
+    code = str(code or "").lower()
+    if code == "auto":
+        st = app_state()
+        st.pop("lang", None)
+        save_json_file(STATE_FILE, st)
+        return True
+    if code in LANGS:
+        save_state({"lang": code})
+        return True
+    return False
+
+def t(key, **params):
+    """Testo localizzato con fallback it → chiave. Vedi STRINGS."""
+    lang = get_lang()
+    s = STRINGS.get(lang, {}).get(key)
+    if s is None:
+        s = STRINGS.get("it", {}).get(key, key)
+    try:
+        return s.format(**params) if params else s
+    except Exception:
+        return s
+
+def pick_language():
+    print(f"\n  {t('lang_title')}")
+    pinned = str(app_state().get("lang") or "").lower()
+    opts = list(LANGS) + ["auto"]
+    for i, code in enumerate(opts, 1):
+        name = LANG_NAMES.get(code, code) if code != "auto" else t("lang_auto")
+        if code == "auto":
+            name += f" ({LANG_NAMES.get(system_lang(), system_lang())})"
+        mark = " ←" if (code == pinned or (code == "auto" and not pinned)) else ""
+        print(f"  [{i}] {name}{mark}")
+    s = (ask(t("lang_prompt")) or "").strip().lower()
+    if not s:
+        return get_lang()
+    try:
+        code = opts[int(s) - 1] if s.isdigit() else s
+    except (ValueError, IndexError):
+        code = s
+    if set_lang(code):
+        eff = get_lang()
+        p_ok(f"{LANG_NAMES.get(eff, eff)} ✓" if code != "auto"
+              else f"{t('lang_auto')} ({LANG_NAMES.get(eff, eff)}) ✓")
+        return eff
+    p_warn(t("lang_invalid"))
+    return get_lang()
+
+STRINGS = {
+"it": {
+"tagline": "Bus · Treni · Aerei nel terminale — stessi endpoint dell’app Flutter",
+"menu_title": "MENU PRINCIPALE",
+"m_simple": "Modalità semplice  (nazione → stazione → tabellone)",
+"m_commands": "Modalità comandi   (scrivi il comando diretto)",
+"m_advanced": "Menu avanzato      (tutte le funzioni)",
+"m_guide": "Guida comandi      (tutti i comandi)",
+"m_fav": "Preferiti           (apre per tipo: treno/stazione/bus/voli)",
+"m_account": "Account             (login, profilo, logout)",
+"m_exit": "Esci",
+"m_choice": "Scelta [0-7, help]: ",
+"m_ctx_country": "Paese {c}",
+"m_ctx_last": "ultimo: {name} [{sid}]",
+"m_ctx_hint": "— scrivi una stazione per cercarla subito",
+"m_invalid": "Scelta non valida: premi 1-7 oppure scrivi un comando.",
+"m_bye": "Ciao! 👋",
+"m_last_none": "Nessun tabellone recente.",
+"transport_title": "Tipo di trasporto:",
+"tr_treni": "🚂 Treni", "tr_bus": "🚌 Bus", "tr_voli": "✈️  Voli", "tr_flix": "🟢 Flixbus",
+"t_back": "Indietro",
+"num_transport": "Numero trasporto [{d}]: ",
+"simple_title": "🟢 Modalità semplice (0 = menu)",
+"train_part": "Tasto 1) Nazionale  2) Regionale  [1]: ",
+"countries_title": "Paesi (numero → codice):",
+"country_prompt": "Paese [{last}] (? = lista): ",
+"country_list_prompt": "Numero paese [invio = {last}]: ",
+"stitle": "🚂 Stazioni · \"{q}\" [{c}]",
+"num_station": "Numero stazione [1-{n}, 0 = annulla]: ",
+"cancelled": "Annullato.",
+"invalid_num": "Numero non valido.",
+"dep_arr": "Tasto 1) Partenze  2) Arrivi  [1]: ",
+"board_menu": "Tasto R) Aggiorna [invio]  1) Altra stazione  2) {opt2}  3) Passa a {other}  4) Timeline treno  5) Grafica  0) Menu  [R]: ",
+"opt_country": "Cambia nazione", "opt_provider": "Cambia provider",
+"to_arr": "Arrivi", "to_dep": "Partenze",
+"row_pick": "Numero riga del treno [1-{n}]: ",
+"no_rows": "Nessuna riga: mostra prima il tabellone.",
+"no_trip_row": "Trip non disponibile per questa riga.",
+"recents": "Recenti:",
+"train_search_prompt": "Nome stazione, R-numero (0 = menu): ",
+"recent_invalid": "Recente non valido.",
+"board_title_dep": "🚂 Partenze · {sid} [{c}]",
+"board_title_arr": "🚂 Arrivi · {sid} [{c}]",
+"col_n": "N", "col_time": "ORA", "col_train": "TRENO", "col_dest": "DESTINAZIONE",
+"col_from": "PROVENIENZA", "col_plat": "BIN", "col_state": "STATO",
+"board_total": "Totale: {n} (mostrati max 30) · tasto 4 = timeline del treno",
+"board_empty": "Nessun treno trovato.",
+"in_time": "in orario",
+"tl_title": "Timeline ({n} fermate):",
+"tl_none": "Nessuna fermata nella timeline.",
+"tl_not_left": "🚂 non partito", "tl_here": "🚂 qui", "tl_travel": "🚂 ↓ in viaggio",
+"tl_arrived": "🚂 arrivato",
+"reg_title": "🏳️ Regionali (0 = menu)",
+"reg_providers": "🏳️ Provider regionali · {c}",
+"reg_none": "Nessun provider regionale.",
+"reg_num": "Numero provider [1-{n}, 0 = annulla]: ",
+"reg_with": "Provider: {p}",
+"reg_station_prompt": "Nome stazione, R-numero (0 = menu): ",
+"reg_board_dep": "🏳️ Partenze regionali · {sid}",
+"reg_board_arr": "🏳️ Arrivi regionali · {sid}",
+"fav_title": "⭐ Preferiti",
+"fav_db": "Dal database (login attivo).",
+"fav_local": "File locale (fai login per il database).",
+"fav_empty": "Nessun preferito.",
+"fav_num": "Numero [0-{n}]: ",
+"acc_title": "👤 Account",
+"acc_in": "Loggato come {e} (nick: {n}, id: {i})",
+"acc_out": "Non loggato (i preferiti restano locali).",
+"acc_menu": "[1] Stato  [2] Login  [3] Registra  [4] Cambia nick  [5] Verifica nick  [6] Logout  [7] Elimina account  [0] Indietro",
+"acc_choice": "Scelta [0-7]: ",
+"ask_email": "Email: ", "ask_pw": "Password: ", "ask_nick": "Nickname: ",
+"ask_new_nick": "Nuovo nickname: ", "ask_check_nick": "Nickname da verificare: ",
+"ask_del_pw": "Password per confermare l'eliminazione (invio = annulla): ",
+"login_ok": "Login ok: {u}", "login_ko": "Credenziali non valide.",
+"reg_ok": "Registrato: {e}",
+"nick_ok": "Nickname disponibile.", "nick_ko": "Nickname occupato.",
+"prof_ok": "Profilo aggiornato: {n}",
+"del_ok": "Account eliminato, sessione pulita.", "del_ko": "Eliminazione fallita.",
+"need_login": "Devi fare login prima.",
+"logout_ok": "Logout, sessione pulita.",
+"logged_as": "Loggato come {e} (nickname: {n})",
+"no_session": "Nessuna sessione. Usa: auth --login <email> <pw>",
+"lang_title": "Lingua / Language / Sprache / Langue:",
+"lang_prompt": "Numero o codice [invio = attuale]: ",
+"lang_invalid": "Lingua non valida.",
+"gui_train": "TRENO · {c}",
+"gui_on_time": "IN ORARIO", "gui_delay": "RITARDO +{d} MIN", "gui_early": "ANTICIPO {d} MIN",
+"gui_online": "● {v} online",
+"gui_live_on": "LIVE ON", "gui_live_off": "LIVE OFF",
+"gui_update": "Aggiorna", "gui_close": "Chiudi",
+"gui_updated": "Aggiornato {t}",
+"gui_route_done": "PERCORSO · {done} DI {n} FERMATE",
+"gui_delay_from": "RITARDO DA {src}",
+"gui_next": "PROSSIMA FERMATA",
+"gui_at": "ore {t}", "gui_plat": "binario {p}",
+"gui_dest_done": "Destinazione raggiunta",
+"gui_wait": "In attesa di partenza...",
+"gui_actions": "AZIONI RAPIDE",
+"gui_btns": ["Statistiche", "Mappa", "Condividi", "Social", "Salva", "Avvisi", "Preferito", "Match"],
+"gui_match_ok": "✓ match: {d}", "gui_match_ko": "nessun match",
+"gui_stops": "FERMATE", "gui_n_stops": "{n} fermate", "gui_no_stops": "Nessuna fermata.",
+"gui_not_left": "NON PARTITO", "gui_here": "QUI", "gui_travel": "IN VIAGGIO",
+"gui_arrived": "ARRIVATO", "gui_cancelled": "SOPPRESSA",
+"gui_dep": "partenza", "gui_arr": "arrivo", "gui_bin": "bin {p}",
+"gui_dep_full": "partenza {t}", "gui_arr_full": "arrivo {t}",
+"gui_stop_wait": "Treno fermo in stazione · partenza {t}",
+"gui_stop_done": "Corsa terminata · treno arrivato a destinazione",
+"gui_stop_travel": "In viaggio · {a} → {b} · {p}%",
+"gui_stop_dwell": "Fermo in stazione · {s}",
+"gui_stop_last": "In viaggio · ultima fermata {s}",
+"gui_stats_title": "STATISTICHE TRENO",
+"bus_prov_title": "Provider bus (invio = ultimo): ",
+"bus_stop_prompt": "Nome fermata, ID o R-numero (0 = menu): ",
+"bus_stop_pick": "Numero fermata o ID diretto (0 = nuova ricerca): ",
+"bus_board_menu": "Tasto R) Aggiorna [invio]  1) Altra fermata  0) Menu  [R]: ",
+"fly_prompt": "Aeroporto, città o codice (0 = menu): ",
+"fly_short": "Scrivi almeno 2 caratteri.",
+"fly_menu": "Tasto R) Aggiorna [invio]  1) Altro aeroporto  2) Passa a {o}  0) Menu  [R]: ",
+"reg_stations": "🏳️ Stazioni regionali {p} · '{q}'",
+"reg_trip": "🏳️ Trip regionale {t}",
+"fav_saved_db": "Salvato nel database: {rid}",
+"fav_dup": "Già nei preferiti.",
+"fav_added_local": "Aggiunto (locale, fai login per il cloud): {key}",
+"fav_removed": "Rimosso {fid}",
+"fav_is": "Nei preferiti.",
+"fav_is_not": "Non nei preferiti.",
+"fav_synced": "Sincronizzati {n} preferiti dal database.",
+"fav_mirror": "Mirror locale: {f}",
+"fav_cloud": "Preferiti cloud",
+"fav_cloud_save": "Salvataggio cloud",
+"fav_cloud_del": "Rimozione cloud",
+"fav_train_fallback": "Treno non live, ID stazione per il dettaglio (invio = annulla): ",
+"fav_no_trip": "Nessun trip disponibile per questo preferito.",
+"fav_bus_prov": "Provider bus (es. bari): ",
+"fav_need_prov": "Serve il provider per la fermata bus.",
+"fav_no_line": "Linea non trovata tra le prime righe del provider.",
+"fav_unknown": "Tipo preferito sconosciuto: {t}",
+"gui_e_stats": "Statistiche non disponibili: {e}",
+"gui_e_map": "Mappa non disponibile: {e}",
+"gui_e_share": "Condivisione fallita: {e}",
+"gui_share_ko": "Condivisione fallita",
+"gui_share_ok": "Link copiato negli appunti:\n{url}",
+"gui_e_social": "Social: {e}",
+"gui_published": "Pubblicato: {res}",
+"gui_save_ok": "Salvato offline:\n{out}",
+"gui_save_ko": "Salvataggio fallito",
+"gui_fav_added": "Aggiunto ai preferiti",
+"gui_no_alerts": "Nessun avviso per questo treno.",
+"gui_e_match": "Match: {e}",
+"gui_match_found": "Match trovato: {d}",
+"gui_match_none": "Nessun match multi-paese.",
+"gui_alerts_t": "Avvisi ({n})",
+"gui_s_rel": "Affidabilità",
+"gui_s_trend": "Trend",
+"gui_s_avg": "Ritardo medio",
+"gui_s_canc": "Cancellazioni",
+"gui_s_trips": "Viaggi analizzati",
+"gui_s_day": "Giorno peggiore",
+"gui_s_station": "Stazione critica",
+"fav_total": "Totale: {n}",
+"bus_no_stops": "Nessuna fermata trovata.",
+"det_title": "🚂 Dettaglio treno {n} @ {s} [{c}]",
+"det_cat": "Categoria:",
+"det_org": "Origine:",
+"det_dest": "Destinazione:",
+"det_time": "Orario:",
+"det_est": "stimato",
+"det_plat": "Binario:",
+"lang_auto": "Automatica (sistema)",
+"m_config": "⚙️ Config             (lingua e opzioni)",
+"cfg_title": "⚙️ Config",
+"cfg_cur": "Lingua: {lang} (scelta manuale)",
+"cfg_auto_is": "Lingua automatica: {lang} (dal sistema)",
+"cfg_change": "Cambia lingua",
+"cfg_choice": "Scelta: ",
+"trip_title": "🚂 Trip {t} [{c}]",
+"trip_line": "Linea:",
+"live_title": "🔎 Treni live · filtro \"{q}\"",
+"fal_title": "🟣 FAL · stazione {s}",
+},
+"en": {
+"tagline": "Bus · Trains · Planes in the terminal — same endpoints as the Flutter app",
+"menu_title": "MAIN MENU",
+"m_simple": "Simple mode  (country → station → board)",
+"m_commands": "Command mode   (type the command directly)",
+"m_advanced": "Advanced menu      (all features)",
+"m_guide": "Command guide      (all commands)",
+"m_fav": "Favorites           (opens by type: train/station/bus/flights)",
+"m_account": "Account             (login, profile, logout)",
+"m_exit": "Exit",
+"m_choice": "Choice [0-7, help]: ",
+"m_ctx_country": "Country {c}",
+"m_ctx_last": "last: {name} [{sid}]",
+"m_ctx_hint": "— type a station to search it right away",
+"m_invalid": "Invalid choice: press 1-7 or type a command.",
+"m_bye": "Bye! 👋",
+"m_last_none": "No recent board.",
+"transport_title": "Transport type:",
+"tr_treni": "🚂 Trains", "tr_bus": "🚌 Buses", "tr_voli": "✈️  Flights", "tr_flix": "🟢 Flixbus",
+"t_back": "Back",
+"num_transport": "Transport number [{d}]: ",
+"simple_title": "🟢 Simple mode (0 = menu)",
+"train_part": "Key 1) National  2) Regional  [1]: ",
+"countries_title": "Countries (number → code):",
+"country_prompt": "Country [{last}] (? = list): ",
+"country_list_prompt": "Country number [enter = {last}]: ",
+"stitle": "🚂 Stations · \"{q}\" [{c}]",
+"num_station": "Station number [1-{n}, 0 = cancel]: ",
+"cancelled": "Cancelled.",
+"invalid_num": "Invalid number.",
+"dep_arr": "Key 1) Departures  2) Arrivals  [1]: ",
+"board_menu": "Key R) Refresh [enter]  1) Other station  2) {opt2}  3) Switch to {other}  4) Train timeline  5) Graphics  0) Menu  [R]: ",
+"opt_country": "Change country", "opt_provider": "Change provider",
+"to_arr": "Arrivals", "to_dep": "Departures",
+"row_pick": "Train row number [1-{n}]: ",
+"no_rows": "No rows: show the board first.",
+"no_trip_row": "Trip not available for this row.",
+"recents": "Recent:",
+"train_search_prompt": "Station name, R-number (0 = menu): ",
+"recent_invalid": "Invalid recent.",
+"board_title_dep": "🚂 Departures · {sid} [{c}]",
+"board_title_arr": "🚂 Arrivals · {sid} [{c}]",
+"col_n": "N", "col_time": "TIME", "col_train": "TRAIN", "col_dest": "DESTINATION",
+"col_from": "ORIGIN", "col_plat": "PLAT", "col_state": "STATUS",
+"board_total": "Total: {n} (showing max 30) · key 4 = train timeline",
+"board_empty": "No trains found.",
+"in_time": "on time",
+"tl_title": "Timeline ({n} stops):",
+"tl_none": "No stops in timeline.",
+"tl_not_left": "🚂 not departed", "tl_here": "🚂 here", "tl_travel": "🚂 ↓ traveling",
+"tl_arrived": "🚂 arrived",
+"reg_title": "🏳️ Regional (0 = menu)",
+"reg_providers": "🏳️ Regional providers · {c}",
+"reg_none": "No regional provider.",
+"reg_num": "Provider number [1-{n}, 0 = cancel]: ",
+"reg_with": "Provider: {p}",
+"reg_station_prompt": "Station name, R-number (0 = menu): ",
+"reg_board_dep": "🏳️ Regional departures · {sid}",
+"reg_board_arr": "🏳️ Regional arrivals · {sid}",
+"fav_title": "⭐ Favorites",
+"fav_db": "From database (logged in).",
+"fav_local": "Local file (log in for the database).",
+"fav_empty": "No favorites.",
+"fav_num": "Number [0-{n}]: ",
+"acc_title": "👤 Account",
+"acc_in": "Logged in as {e} (nick: {n}, id: {i})",
+"acc_out": "Not logged in (favorites stay local).",
+"acc_menu": "[1] Status  [2] Login  [3] Register  [4] Change nick  [5] Check nick  [6] Logout  [7] Delete account  [0] Back",
+"acc_choice": "Choice [0-7]: ",
+"ask_email": "Email: ", "ask_pw": "Password: ", "ask_nick": "Nickname: ",
+"ask_new_nick": "New nickname: ", "ask_check_nick": "Nickname to check: ",
+"ask_del_pw": "Password to confirm deletion (enter = cancel): ",
+"login_ok": "Login ok: {u}", "login_ko": "Invalid credentials.",
+"reg_ok": "Registered: {e}",
+"nick_ok": "Nickname available.", "nick_ko": "Nickname taken.",
+"prof_ok": "Profile updated: {n}",
+"del_ok": "Account deleted, session cleared.", "del_ko": "Deletion failed.",
+"need_login": "You must log in first.",
+"logout_ok": "Logout, session cleared.",
+"logged_as": "Logged in as {e} (nickname: {n})",
+"no_session": "No session. Use: auth --login <email> <pw>",
+"lang_title": "Language / Lingua / Sprache / Langue:",
+"lang_prompt": "Number or code [enter = current]: ",
+"lang_invalid": "Invalid language.",
+"gui_train": "TRAIN · {c}",
+"gui_on_time": "ON TIME", "gui_delay": "DELAY +{d} MIN", "gui_early": "EARLY {d} MIN",
+"gui_online": "● {v} online",
+"gui_live_on": "LIVE ON", "gui_live_off": "LIVE OFF",
+"gui_update": "Refresh", "gui_close": "Close",
+"gui_updated": "Updated {t}",
+"gui_route_done": "ROUTE · {done} OF {n} STOPS",
+"gui_delay_from": "DELAY FROM {src}",
+"gui_next": "NEXT STOP",
+"gui_at": "at {t}", "gui_plat": "platform {p}",
+"gui_dest_done": "Destination reached",
+"gui_wait": "Waiting for departure...",
+"gui_actions": "QUICK ACTIONS",
+"gui_btns": ["Stats", "Map", "Share", "Social", "Save", "Alerts", "Favorite", "Match"],
+"gui_match_ok": "✓ match: {d}", "gui_match_ko": "no match",
+"gui_stops": "STOPS", "gui_n_stops": "{n} stops", "gui_no_stops": "No stops.",
+"gui_not_left": "NOT DEPARTED", "gui_here": "HERE", "gui_travel": "TRAVELING",
+"gui_arrived": "ARRIVED", "gui_cancelled": "CANCELLED",
+"gui_dep": "departure", "gui_arr": "arrival", "gui_bin": "plat {p}",
+"gui_dep_full": "departure {t}", "gui_arr_full": "arrival {t}",
+"gui_stop_wait": "Train at station · departure {t}",
+"gui_stop_done": "Run finished · train arrived",
+"gui_stop_travel": "Traveling · {a} → {b} · {p}%",
+"gui_stop_dwell": "Stopped at station · {s}",
+"gui_stop_last": "Traveling · last stop {s}",
+"gui_stats_title": "TRAIN STATS",
+"bus_prov_title": "Bus provider (enter = last): ",
+"bus_stop_prompt": "Stop name, ID or R-number (0 = menu): ",
+"bus_stop_pick": "Stop number or direct ID (0 = new search): ",
+"bus_board_menu": "Key R) Refresh [enter]  1) Other stop  0) Menu  [R]: ",
+"fly_prompt": "Airport, city or code (0 = menu): ",
+"fly_short": "Type at least 2 characters.",
+"fly_menu": "Key R) Refresh [enter]  1) Other airport  2) Switch to {o}  0) Menu  [R]: ",
+"reg_stations": "🏳️ Regional stations {p} · '{q}'",
+"reg_trip": "🏳️ Regional trip {t}",
+"fav_saved_db": "Saved to database: {rid}",
+"fav_dup": "Already in favorites.",
+"fav_added_local": "Added (local, log in for cloud): {key}",
+"fav_removed": "Removed {fid}",
+"fav_is": "In favorites.",
+"fav_is_not": "Not in favorites.",
+"fav_synced": "Synced {n} favorites from database.",
+"fav_mirror": "Local mirror: {f}",
+"fav_cloud": "Cloud favorites",
+"fav_cloud_save": "Cloud save",
+"fav_cloud_del": "Cloud removal",
+"fav_train_fallback": "Train not live, station ID for details (enter = cancel): ",
+"fav_no_trip": "No trip available for this favorite.",
+"fav_bus_prov": "Bus provider (e.g. bari): ",
+"fav_need_prov": "Provider needed for bus stop.",
+"fav_no_line": "Line not found in provider top rows.",
+"fav_unknown": "Unknown favorite type: {t}",
+"gui_e_stats": "Stats unavailable: {e}",
+"gui_e_map": "Map unavailable: {e}",
+"gui_e_share": "Share failed: {e}",
+"gui_share_ko": "Share failed",
+"gui_share_ok": "Link copied to clipboard:\n{url}",
+"gui_e_social": "Social: {e}",
+"gui_published": "Published: {res}",
+"gui_save_ok": "Saved offline:\n{out}",
+"gui_save_ko": "Save failed",
+"gui_fav_added": "Added to favorites",
+"gui_no_alerts": "No alerts for this train.",
+"gui_e_match": "Match: {e}",
+"gui_match_found": "Match found: {d}",
+"gui_match_none": "No cross-country match.",
+"gui_alerts_t": "Alerts ({n})",
+"gui_s_rel": "Reliability",
+"gui_s_trend": "Trend",
+"gui_s_avg": "Avg delay",
+"gui_s_canc": "Cancellations",
+"gui_s_trips": "Trips analyzed",
+"gui_s_day": "Worst day",
+"gui_s_station": "Critical station",
+"fav_total": "Total: {n}",
+"bus_no_stops": "No stops found.",
+"det_title": "🚂 Train details {n} @ {s} [{c}]",
+"det_cat": "Category:",
+"det_org": "Origin:",
+"det_dest": "Destination:",
+"det_time": "Time:",
+"det_est": "estimated",
+"det_plat": "Platform:",
+"lang_auto": "Automatic (system)",
+"m_config": "⚙️ Config             (language & options)",
+"cfg_title": "⚙️ Config",
+"cfg_cur": "Language: {lang} (manual)",
+"cfg_auto_is": "Automatic language: {lang} (from system)",
+"cfg_change": "Change language",
+"cfg_choice": "Choice: ",
+"trip_title": "🚂 Trip {t} [{c}]",
+"trip_line": "Line:",
+"live_title": "🔎 Live trains · filter \"{q}\"",
+"fal_title": "🟣 FAL · station {s}",
+},
+"de": {
+"tagline": "Bus · Züge · Flugzeuge im Terminal — gleiche Endpunkte wie die Flutter-App",
+"menu_title": "HAUPTMENÜ",
+"m_simple": "Einfacher Modus  (Land → Bahnhof → Abfahrtstafel)",
+"m_commands": "Befehlsmodus   (Befehl direkt eingeben)",
+"m_advanced": "Erweitertes Menü      (alle Funktionen)",
+"m_guide": "Befehlsübersicht      (alle Befehle)",
+"m_fav": "Favoriten           (öffnet nach Typ: Zug/Bahnhof/Bus/Flüge)",
+"m_account": "Konto             (Login, Profil, Logout)",
+"m_exit": "Beenden",
+"m_choice": "Auswahl [0-7, help]: ",
+"m_ctx_country": "Land {c}",
+"m_ctx_last": "zuletzt: {name} [{sid}]",
+"m_ctx_hint": "— Bahnhof eingeben, um sofort zu suchen",
+"m_invalid": "Ungültige Auswahl: 1-7 drücken oder Befehl eingeben.",
+"m_bye": "Tschüss! 👋",
+"m_last_none": "Keine aktuelle Tafel.",
+"transport_title": "Verkehrsmittel:",
+"tr_treni": "🚂 Züge", "tr_bus": "🚌 Busse", "tr_voli": "✈️  Flüge", "tr_flix": "🟢 Flixbus",
+"t_back": "Zurück",
+"num_transport": "Verkehrsmittelnummer [{d}]: ",
+"simple_title": "🟢 Einfacher Modus (0 = Menü)",
+"train_part": "Taste 1) National  2) Regional  [1]: ",
+"countries_title": "Länder (Nummer → Code):",
+"country_prompt": "Land [{last}] (? = Liste): ",
+"country_list_prompt": "Ländernummmer [Enter = {last}]: ",
+"stitle": "🚂 Bahnhöfe · \"{q}\" [{c}]",
+"num_station": "Bahnhofsnummer [1-{n}, 0 = Abbrechen]: ",
+"cancelled": "Abgebrochen.",
+"invalid_num": "Ungültige Nummer.",
+"dep_arr": "Taste 1) Abfahrten  2) Ankünfte  [1]: ",
+"board_menu": "Taste R) Aktualisieren [Enter]  1) Anderer Bahnhof  2) {opt2}  3) Wechseln zu {other}  4) Zug-Timeline  5) Grafik  0) Menü  [R]: ",
+"opt_country": "Land wechseln", "opt_provider": "Anbieter wechseln",
+"to_arr": "Ankünfte", "to_dep": "Abfahrten",
+"row_pick": "Zugzeilennummer [1-{n}]: ",
+"no_rows": "Keine Zeilen: zuerst die Tafel anzeigen.",
+"no_trip_row": "Trip für diese Zeile nicht verfügbar.",
+"recents": "Zuletzt:",
+"train_search_prompt": "Bahnhofsname, R-Nummer (0 = Menü): ",
+"recent_invalid": "Ungültiger Verlauf.",
+"board_title_dep": "🚂 Abfahrten · {sid} [{c}]",
+"board_title_arr": "🚂 Ankünfte · {sid} [{c}]",
+"col_n": "N", "col_time": "ZEIT", "col_train": "ZUG", "col_dest": "ZIEL",
+"col_from": "HERKUNFT", "col_plat": "GLS", "col_state": "STATUS",
+"board_total": "Gesamt: {n} (max. 30 gezeigt) · Taste 4 = Zug-Timeline",
+"board_empty": "Keine Züge gefunden.",
+"in_time": "pünktlich",
+"tl_title": "Timeline ({n} Halte):",
+"tl_none": "Keine Halte in der Timeline.",
+"tl_not_left": "🚂 nicht abgefahren", "tl_here": "🚂 hier", "tl_travel": "🚂 ↓ unterwegs",
+"tl_arrived": "🚂 angekommen",
+"reg_title": "🏳️ Regional (0 = Menü)",
+"reg_providers": "🏳️ Regionale Anbieter · {c}",
+"reg_none": "Kein regionaler Anbieter.",
+"reg_num": "Anbieternummer [1-{n}, 0 = Abbrechen]: ",
+"reg_with": "Anbieter: {p}",
+"reg_station_prompt": "Bahnhofsname, R-Nummer (0 = Menü): ",
+"reg_board_dep": "🏳️ Regionale Abfahrten · {sid}",
+"reg_board_arr": "🏳️ Regionale Ankünfte · {sid}",
+"fav_title": "⭐ Favoriten",
+"fav_db": "Aus Datenbank (angemeldet).",
+"fav_local": "Lokale Datei (für Datenbank anmelden).",
+"fav_empty": "Keine Favoriten.",
+"fav_num": "Nummer [0-{n}]: ",
+"acc_title": "👤 Konto",
+"acc_in": "Angemeldet als {e} (Nick: {n}, ID: {i})",
+"acc_out": "Nicht angemeldet (Favoriten bleiben lokal).",
+"acc_menu": "[1] Status  [2] Login  [3] Registrieren  [4] Nick ändern  [5] Nick prüfen  [6] Logout  [7] Konto löschen  [0] Zurück",
+"acc_choice": "Auswahl [0-7]: ",
+"ask_email": "E-Mail: ", "ask_pw": "Passwort: ", "ask_nick": "Nickname: ",
+"ask_new_nick": "Neuer Nickname: ", "ask_check_nick": "Zu prüfender Nickname: ",
+"ask_del_pw": "Passwort zum Bestätigen (Enter = Abbrechen): ",
+"login_ok": "Login ok: {u}", "login_ko": "Ungültige Anmeldedaten.",
+"reg_ok": "Registriert: {e}",
+"nick_ok": "Nickname verfügbar.", "nick_ko": "Nickname vergeben.",
+"prof_ok": "Profil aktualisiert: {n}",
+"del_ok": "Konto gelöscht, Sitzung beendet.", "del_ko": "Löschen fehlgeschlagen.",
+"need_login": "Bitte zuerst anmelden.",
+"logout_ok": "Logout, Sitzung beendet.",
+"logged_as": "Angemeldet als {e} (Nickname: {n})",
+"no_session": "Keine Sitzung. Nutze: auth --login <email> <pw>",
+"lang_title": "Sprache / Lingua / Language / Langue:",
+"lang_prompt": "Nummer oder Code [Enter = aktuell]: ",
+"lang_invalid": "Ungültige Sprache.",
+"gui_train": "ZUG · {c}",
+"gui_on_time": "PÜNKTLICH", "gui_delay": "VERSPÄTUNG +{d} MIN", "gui_early": "FRÜHER {d} MIN",
+"gui_online": "● {v} online",
+"gui_live_on": "LIVE AN", "gui_live_off": "LIVE AUS",
+"gui_update": "Aktualisieren", "gui_close": "Schließen",
+"gui_updated": "Aktualisiert {t}",
+"gui_route_done": "STRECKE · {done} VON {n} HALTEN",
+"gui_delay_from": "VERSPÄTUNG VON {src}",
+"gui_next": "NÄCHSTER HALT",
+"gui_at": "um {t}", "gui_plat": "Gleis {p}",
+"gui_dest_done": "Ziel erreicht",
+"gui_wait": "Warte auf Abfahrt...",
+"gui_actions": "SCHNELLAKTIONEN",
+"gui_btns": ["Statistik", "Karte", "Teilen", "Social", "Speichern", "Meldungen", "Favorit", "Match"],
+"gui_match_ok": "✓ Match: {d}", "gui_match_ko": "kein Match",
+"gui_stops": "HALTE", "gui_n_stops": "{n} Halte", "gui_no_stops": "Keine Halte.",
+"gui_not_left": "NICHT ABGEFAHREN", "gui_here": "HIER", "gui_travel": "UNTERWEGS",
+"gui_arrived": "ANGEKOMMEN", "gui_cancelled": "ENTFALLEN",
+"gui_dep": "Abfahrt", "gui_arr": "Ankunft", "gui_bin": "Gl {p}",
+"gui_dep_full": "Abfahrt {t}", "gui_arr_full": "Ankunft {t}",
+"gui_stop_wait": "Zug im Bahnhof · Abfahrt {t}",
+"gui_stop_done": "Fahrt beendet · Zug angekommen",
+"gui_stop_travel": "Unterwegs · {a} → {b} · {p}%",
+"gui_stop_dwell": "Halt im Bahnhof · {s}",
+"gui_stop_last": "Unterwegs · letzter Halt {s}",
+"gui_stats_title": "ZUGSTATISTIK",
+"bus_prov_title": "Busanbieter (Enter = letzter): ",
+"bus_stop_prompt": "Haltestellenname, ID oder R-Nummer (0 = Menü): ",
+"bus_stop_pick": "Haltestellennummer oder direkte ID (0 = neue Suche): ",
+"bus_board_menu": "Taste R) Aktualisieren [Enter]  1) Andere Haltestelle  0) Menü  [R]: ",
+"fly_prompt": "Flughafen, Stadt oder Code (0 = Menü): ",
+"fly_short": "Mindestens 2 Zeichen eingeben.",
+"fly_menu": "Taste R) Aktualisieren [Enter]  1) Anderer Flughafen  2) Wechseln zu {o}  0) Menü  [R]: ",
+"reg_stations": "🏳️ Regionale Bahnhöfe {p} · '{q}'",
+"reg_trip": "🏳️ Regionaler Trip {t}",
+"fav_saved_db": "In Datenbank gespeichert: {rid}",
+"fav_dup": "Bereits in Favoriten.",
+"fav_added_local": "Hinzugefügt (lokal, für Cloud anmelden): {key}",
+"fav_removed": "Entfernt {fid}",
+"fav_is": "In Favoriten.",
+"fav_is_not": "Nicht in Favoriten.",
+"fav_synced": "{n} Favoriten aus Datenbank synchronisiert.",
+"fav_mirror": "Lokale Kopie: {f}",
+"fav_cloud": "Cloud-Favoriten",
+"fav_cloud_save": "Cloud-Speichern",
+"fav_cloud_del": "Cloud-Löschen",
+"fav_train_fallback": "Zug nicht live, Bahnhofs-ID für Details (Enter = Abbrechen): ",
+"fav_no_trip": "Kein Trip für diesen Favoriten verfügbar.",
+"fav_bus_prov": "Busanbieter (z. B. bari): ",
+"fav_need_prov": "Anbieter für Bushaltestelle nötig.",
+"fav_no_line": "Linie in den Top-Zeilen des Anbieters nicht gefunden.",
+"fav_unknown": "Unbekannter Favoritentyp: {t}",
+"gui_e_stats": "Statistik nicht verfügbar: {e}",
+"gui_e_map": "Karte nicht verfügbar: {e}",
+"gui_e_share": "Teilen fehlgeschlagen: {e}",
+"gui_share_ko": "Teilen fehlgeschlagen",
+"gui_share_ok": "Link in Zwischenablage kopiert:\n{url}",
+"gui_e_social": "Social: {e}",
+"gui_published": "Veröffentlicht: {res}",
+"gui_save_ok": "Offline gespeichert:\n{out}",
+"gui_save_ko": "Speichern fehlgeschlagen",
+"gui_fav_added": "Zu Favoriten hinzugefügt",
+"gui_no_alerts": "Keine Meldungen für diesen Zug.",
+"gui_e_match": "Match: {e}",
+"gui_match_found": "Match gefunden: {d}",
+"gui_match_none": "Kein länderübergreifender Match.",
+"gui_alerts_t": "Meldungen ({n})",
+"gui_s_rel": "Zuverlässigkeit",
+"gui_s_trend": "Trend",
+"gui_s_avg": "Ø Verspätung",
+"gui_s_canc": "Ausfälle",
+"gui_s_trips": "Analysierte Fahrten",
+"gui_s_day": "Schlechtester Tag",
+"gui_s_station": "Kritischer Bahnhof",
+"fav_total": "Gesamt: {n}",
+"bus_no_stops": "Keine Haltestelle gefunden.",
+"det_title": "🚂 Zugdetails {n} @ {s} [{c}]",
+"det_cat": "Kategorie:",
+"det_org": "Herkunft:",
+"det_dest": "Ziel:",
+"det_time": "Zeit:",
+"det_est": "voraussichtlich",
+"det_plat": "Gleis:",
+"lang_auto": "Automatisch (System)",
+"m_config": "⚙️ Konfig             (Sprache & Optionen)",
+"cfg_title": "⚙️ Konfig",
+"cfg_cur": "Sprache: {lang} (manuell)",
+"cfg_auto_is": "Automatische Sprache: {lang} (vom System)",
+"cfg_change": "Sprache ändern",
+"cfg_choice": "Auswahl: ",
+"trip_title": "🚂 Trip {t} [{c}]",
+"trip_line": "Linie:",
+"live_title": "🔎 Live-Züge · Filter \"{q}\"",
+"fal_title": "🟣 FAL · Bahnhof {s}",
+},
+"fr": {
+"tagline": "Bus · Trains · Avions dans le terminal — mêmes endpoints que l’app Flutter",
+"menu_title": "MENU PRINCIPAL",
+"m_simple": "Mode simple  (pays → gare → tableau)",
+"m_commands": "Mode commandes   (tapez la commande)",
+"m_advanced": "Menu avancé      (toutes les fonctions)",
+"m_guide": "Guide commandes      (toutes les commandes)",
+"m_fav": "Favoris           (ouvre par type : train/gare/bus/vols)",
+"m_account": "Compte             (login, profil, logout)",
+"m_exit": "Quitter",
+"m_choice": "Choix [0-7, help]: ",
+"m_ctx_country": "Pays {c}",
+"m_ctx_last": "dernier : {name} [{sid}]",
+"m_ctx_hint": "— tapez une gare pour la chercher aussitôt",
+"m_invalid": "Choix invalide : 1-7 ou tapez une commande.",
+"m_bye": "Salut ! 👋",
+"m_last_none": "Aucun tableau récent.",
+"transport_title": "Type de transport :",
+"tr_treni": "🚂 Trains", "tr_bus": "🚌 Bus", "tr_voli": "✈️  Vols", "tr_flix": "🟢 Flixbus",
+"t_back": "Retour",
+"num_transport": "Numéro transport [{d}]: ",
+"simple_title": "🟢 Mode simple (0 = menu)",
+"train_part": "Touche 1) National  2) Régional  [1] : ",
+"countries_title": "Pays (numéro → code) :",
+"country_prompt": "Pays [{last}] (? = liste) : ",
+"country_list_prompt": "Numéro pays [entrée = {last}] : ",
+"stitle": "🚂 Gares · « {q} » [{c}]",
+"num_station": "Numéro gare [1-{n}, 0 = annuler] : ",
+"cancelled": "Annulé.",
+"invalid_num": "Numéro invalide.",
+"dep_arr": "Touche 1) Départs  2) Arrivées  [1] : ",
+"board_menu": "Touche R) Actualiser [entrée]  1) Autre gare  2) {opt2}  3) Passer à {other}  4) Timeline train  5) Graphique  0) Menu  [R] : ",
+"opt_country": "Changer de pays", "opt_provider": "Changer d’opérateur",
+"to_arr": "Arrivées", "to_dep": "Départs",
+"row_pick": "Numéro ligne du train [1-{n}] : ",
+"no_rows": "Aucune ligne : affichez d’abord le tableau.",
+"no_trip_row": "Trip indisponible pour cette ligne.",
+"recents": "Récents :",
+"train_search_prompt": "Nom gare, n° R (0 = menu) : ",
+"recent_invalid": "Récent invalide.",
+"board_title_dep": "🚂 Départs · {sid} [{c}]",
+"board_title_arr": "🚂 Arrivées · {sid} [{c}]",
+"col_n": "N", "col_time": "HEURE", "col_train": "TRAIN", "col_dest": "DESTINATION",
+"col_from": "PROVENANCE", "col_plat": "VOIE", "col_state": "ÉTAT",
+"board_total": "Total : {n} (max 30 affichés) · touche 4 = timeline du train",
+"board_empty": "Aucun train trouvé.",
+"in_time": "à l’heure",
+"tl_title": "Timeline ({n} arrêts) :",
+"tl_none": "Aucun arrêt dans la timeline.",
+"tl_not_left": "🚂 non parti", "tl_here": "🚂 ici", "tl_travel": "🚂 ↓ en route",
+"tl_arrived": "🚂 arrivé",
+"reg_title": "🏳️ Régional (0 = menu)",
+"reg_providers": "🏳️ Opérateurs régionaux · {c}",
+"reg_none": "Aucun opérateur régional.",
+"reg_num": "Numéro opérateur [1-{n}, 0 = annuler] : ",
+"reg_with": "Opérateur : {p}",
+"reg_station_prompt": "Nom gare, n° R (0 = menu) : ",
+"reg_board_dep": "🏳️ Départs régionaux · {sid}",
+"reg_board_arr": "🏳️ Arrivées régionales · {sid}",
+"fav_title": "⭐ Favoris",
+"fav_db": "Depuis la base (connecté).",
+"fav_local": "Fichier local (connectez-vous pour la base).",
+"fav_empty": "Aucun favori.",
+"fav_num": "Numéro [0-{n}] : ",
+"acc_title": "👤 Compte",
+"acc_in": "Connecté : {e} (pseudo : {n}, id : {i})",
+"acc_out": "Non connecté (les favoris restent locaux).",
+"acc_menu": "[1] État  [2] Login  [3] Inscription  [4] Changer pseudo  [5] Vérifier pseudo  [6] Logout  [7] Supprimer compte  [0] Retour",
+"acc_choice": "Choix [0-7] : ",
+"ask_email": "Email : ", "ask_pw": "Mot de passe : ", "ask_nick": "Pseudo : ",
+"ask_new_nick": "Nouveau pseudo : ", "ask_check_nick": "Pseudo à vérifier : ",
+"ask_del_pw": "Mot de passe pour confirmer (entrée = annuler) : ",
+"login_ok": "Login ok : {u}", "login_ko": "Identifiants invalides.",
+"reg_ok": "Inscrit : {e}",
+"nick_ok": "Pseudo disponible.", "nick_ko": "Pseudo occupé.",
+"prof_ok": "Profil mis à jour : {n}",
+"del_ok": "Compte supprimé, session nettoyée.", "del_ko": "Suppression échouée.",
+"need_login": "Connectez-vous d’abord.",
+"logout_ok": "Logout, session nettoyée.",
+"logged_as": "Connecté : {e} (pseudo : {n})",
+"no_session": "Aucune session. Utilisez : auth --login <email> <pw>",
+"lang_title": "Langue / Lingua / Language / Sprache :",
+"lang_prompt": "Numéro ou code [entrée = actuelle] : ",
+"lang_invalid": "Langue invalide.",
+"gui_train": "TRAIN · {c}",
+"gui_on_time": "À L’HEURE", "gui_delay": "RETARD +{d} MIN", "gui_early": "EN AVANCE {d} MIN",
+"gui_online": "● {v} en ligne",
+"gui_live_on": "LIVE ON", "gui_live_off": "LIVE OFF",
+"gui_update": "Actualiser", "gui_close": "Fermer",
+"gui_updated": "Mis à jour {t}",
+"gui_route_done": "PARCOURS · {done} SUR {n} ARRÊTS",
+"gui_delay_from": "RETARD VIA {src}",
+"gui_next": "PROCHAIN ARRÊT",
+"gui_at": "{t}", "gui_plat": "voie {p}",
+"gui_dest_done": "Destination atteinte",
+"gui_wait": "En attente de départ...",
+"gui_actions": "ACTIONS RAPIDES",
+"gui_btns": ["Stats", "Carte", "Partager", "Social", "Sauver", "Alertes", "Favori", "Match"],
+"gui_match_ok": "✓ match : {d}", "gui_match_ko": "aucun match",
+"gui_stops": "ARRÊTS", "gui_n_stops": "{n} arrêts", "gui_no_stops": "Aucun arrêt.",
+"gui_not_left": "NON PARTI", "gui_here": "ICI", "gui_travel": "EN ROUTE",
+"gui_arrived": "ARRIVÉ", "gui_cancelled": "SUPPRIMÉ",
+"gui_dep": "départ", "gui_arr": "arrivée", "gui_bin": "voie {p}",
+"gui_dep_full": "départ {t}", "gui_arr_full": "arrivée {t}",
+"gui_stop_wait": "Train en gare · départ {t}",
+"gui_stop_done": "Course terminée · train arrivé",
+"gui_stop_travel": "En route · {a} → {b} · {p}%",
+"gui_stop_dwell": "Arrêt en gare · {s}",
+"gui_stop_last": "En route · dernier arrêt {s}",
+"gui_stats_title": "STATS TRAIN",
+"bus_prov_title": "Opérateur bus (entrée = dernier) : ",
+"bus_stop_prompt": "Nom arrêt, ID ou n° R (0 = menu) : ",
+"bus_stop_pick": "Numéro arrêt ou ID direct (0 = nouvelle recherche) : ",
+"bus_board_menu": "Touche R) Actualiser [entrée]  1) Autre arrêt  0) Menu  [R] : ",
+"fly_prompt": "Aéroport, ville ou code (0 = menu) : ",
+"fly_short": "Au moins 2 caractères.",
+"fly_menu": "Touche R) Actualiser [entrée]  1) Autre aéroport  2) Passer à {o}  0) Menu  [R] : ",
+"reg_stations": "🏳️ Gares régionales {p} · « {q} »",
+"reg_trip": "🏳️ Trip régional {t}",
+"fav_saved_db": "Enregistré en base : {rid}",
+"fav_dup": "Déjà dans les favoris.",
+"fav_added_local": "Ajouté (local, connectez-vous pour le cloud) : {key}",
+"fav_removed": "Supprimé {fid}",
+"fav_is": "Dans les favoris.",
+"fav_is_not": "Pas dans les favoris.",
+"fav_synced": "{n} favoris synchronisés depuis la base.",
+"fav_mirror": "Miroir local : {f}",
+"fav_cloud": "Favoris cloud",
+"fav_cloud_save": "Sauvegarde cloud",
+"fav_cloud_del": "Suppression cloud",
+"fav_train_fallback": "Train non live, ID gare pour le détail (entrée = annuler) : ",
+"fav_no_trip": "Aucun trip pour ce favori.",
+"fav_bus_prov": "Opérateur bus (ex. bari) : ",
+"fav_need_prov": "Opérateur requis pour l’arrêt de bus.",
+"fav_no_line": "Ligne introuvable dans les premières lignes de l’opérateur.",
+"fav_unknown": "Type de favori inconnu : {t}",
+"gui_e_stats": "Stats indisponibles : {e}",
+"gui_e_map": "Carte indisponible : {e}",
+"gui_e_share": "Partage échoué : {e}",
+"gui_share_ko": "Partage échoué",
+"gui_share_ok": "Lien copié :\n{url}",
+"gui_e_social": "Social : {e}",
+"gui_published": "Publié : {res}",
+"gui_save_ok": "Sauvé hors-ligne :\n{out}",
+"gui_save_ko": "Sauvegarde échouée",
+"gui_fav_added": "Ajouté aux favoris",
+"gui_no_alerts": "Aucune alerte pour ce train.",
+"gui_e_match": "Match : {e}",
+"gui_match_found": "Match trouvé : {d}",
+"gui_match_none": "Aucun match multi-pays.",
+"gui_alerts_t": "Alertes ({n})",
+"gui_s_rel": "Fiabilité",
+"gui_s_trend": "Tendance",
+"gui_s_avg": "Retard moyen",
+"gui_s_canc": "Annulations",
+"gui_s_trips": "Trajets analysés",
+"gui_s_day": "Pire jour",
+"gui_s_station": "Gare critique",
+"fav_total": "Total : {n}",
+"bus_no_stops": "Aucun arrêt trouvé.",
+"det_title": "🚂 Détail train {n} @ {s} [{c}]",
+"det_cat": "Catégorie :",
+"det_org": "Origine :",
+"det_dest": "Destination :",
+"det_time": "Horaire :",
+"det_est": "estimé",
+"det_plat": "Voie :",
+"lang_auto": "Automatique (système)",
+"m_config": "⚙️ Config             (langue et options)",
+"cfg_title": "⚙️ Config",
+"cfg_cur": "Langue : {lang} (manuelle)",
+"cfg_auto_is": "Langue automatique : {lang} (du système)",
+"cfg_change": "Changer de langue",
+"cfg_choice": "Choix : ",
+"trip_title": "🚂 Trip {t} [{c}]",
+"trip_line": "Ligne :",
+"live_title": "🔎 Trains live · filtre « {q} »",
+"fal_title": "🟣 FAL · gare {s}",
+},
+}
+
 # -- MENU INTERATTIVI ---------------------------------------------------------
 def banner():
     if USE_COLOR:
@@ -3905,7 +4713,7 @@ def banner():
         print(bar)
     else:
         print("=== BC.Transporter · terminale ===")
-    print(f"  {dim('Bus · Treni · Aerei nel terminale — stessi endpoint dell’app Flutter')}")
+    print(f"  {dim(t('tagline'))}")
 
 def pick_country():
     # Veloce: invio = ultimo usato, codice diretto, ? = lista completa
@@ -3915,20 +4723,20 @@ def pick_country():
     if not entries:
         entries = train_countries() or []
     if not entries:
-        c = (ask(f"Paese [{last}]: ") or last).upper()
+        c = (ask(t("country_prompt", last=last)) or last).upper()
         remember_country(c)
         return c
 
     def show_list():
-        print(f"\n  {dim('Paesi (numero → codice):')}")
+        print(f"\n  {dim(t('countries_title'))}")
         for e in entries:
             mark = " ←" if str(e["code"]).upper() == last else ""
             print(f"  {c_train('[' + str(e['n']) + ']')} {e['code'].ljust(18)} {dim(e['name'])}{mark}")
 
-    sel = (ask(f"Paese [{last}] (? = lista): ").strip() or last)
+    sel = (ask(t("country_prompt", last=last)).strip() or last)
     if sel == "?":
         show_list()
-        sel = (ask(f"Numero paese [invio = {last}]: ").strip() or last)
+        sel = (ask(t("country_list_prompt", last=last)).strip() or last)
     code = country_from_number(sel)
     if code:
         remember_country(code)
@@ -3947,16 +4755,16 @@ def run_direct(line):
     except SystemExit:
         pass
 
-TRANSPORTS = (("treni", "🚂 Treni"), ("bus", "🚌 Bus"),
-              ("voli", "✈️  Voli"), ("flixbus", "🟢 Flixbus"))
+TRANSPORTS = (("treni", "tr_treni"), ("bus", "tr_bus"),
+              ("voli", "tr_voli"), ("flixbus", "tr_flix"))
 
 def pick_transport(default="1"):
-    print(f"\n  {dim('Tipo di trasporto:')}")
+    print(f"\n  {dim(t('transport_title'))}")
     painters = {"treni": c_train, "bus": c_bus, "voli": c_plane, "flixbus": ok}
-    for i, (key, label) in enumerate(TRANSPORTS, 1):
-        print(f"  {painters[key](f'[{i}]')} {label}")
-    print(f"  {dim('[0] Indietro')}")
-    s = ask(f"Numero trasporto [{default}]: ").strip() or default
+    for i, (key, tkey) in enumerate(TRANSPORTS, 1):
+        print(f"  {painters[key](f'[{i}]')} {t(tkey)}")
+    print(f"  {dim('[0] ' + t('t_back'))}")
+    s = ask(t("num_transport", d=default)).strip() or default
     if s == "0":
         return None
     try:
@@ -3965,12 +4773,12 @@ def pick_transport(default="1"):
         return TRANSPORTS[int(default) - 1][0]
 
 def simple_mode():
-    p_title("🟢 Modalità semplice (0 = menu)")
+    p_title(t("simple_title"))
     transport = pick_transport()
     if transport is None:
         return
     if transport == "treni":
-        parte = ask("Tasto 1) Nazionale  2) Regionale  [1]: ").strip() or "1"
+        parte = ask(t("train_part")).strip() or "1"
         if parte == "2":
             simple_regional()
         else:
@@ -3983,20 +4791,20 @@ def simple_mode():
         simple_flix()
 
 def simple_regional():
-    p_title("🏳️ Regionali (0 = menu)")
+    p_title(t("reg_title"))
     country = pick_country()
     provider = pick_regional_provider(country)
     if not provider:
         return
-    p_ok(f"Provider: {provider}")
+    p_ok(t("reg_with", p=provider))
     while True:
         rec = [e for e in get_recent("recent_regstations")
                if e.get("provider") == provider][:5]
         if rec:
-            print(f"\n  {dim('Recenti:')}")
+            print(f"\n  {dim(t('recents'))}")
             for i, e in enumerate(rec, 1):
                 print(f"  {ok(f'[R{i}]')} {e.get('name')}  {dim(str(e.get('sid')))}")
-        q = ask("\nNome stazione, R-numero (0 = menu): ")
+        q = ask("\n" + t("reg_station_prompt"))
         if not q or q.strip() == "0":
             return
         q = q.strip()
@@ -4004,16 +4812,16 @@ def simple_regional():
             idx = int(q[1:]) - 1
             if 0 <= idx < len(rec):
                 e = rec[idx]
-                m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+                m = ask(t("dep_arr")).strip() or "1"
                 r = train_board_loop(str(e.get("sid")), country, m == "2",
                                      str(e.get("name") or "?"), provider=provider)
                 if r is None:
                     return
                 if r.get("provider") and r["provider"] != provider:
                     provider = r["provider"]
-                    p_ok(f"Provider: {provider}")
+                    p_ok(t("reg_with", p=provider))
                 continue
-            p_warn("Recente non valido.")
+            p_warn(t("recent_invalid"))
             continue
         try:
             _, _, lst = fetch_reg_stations(country, provider, q)
@@ -4037,19 +4845,19 @@ def simple_regional():
             continue
         sid = str(choice.get("id") or choice.get("stationId") or "")
         name = str(choice.get("name") or choice.get("stationName") or "?")
-        m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+        m = ask(t("dep_arr")).strip() or "1"
         r = train_board_loop(sid, country, m == "2", name, provider=provider)
         if r is None:
             return
         if r.get("provider") and r["provider"] != provider:
             provider = r["provider"]
-            p_ok(f"Provider: {provider}")
+            p_ok(t("reg_with", p=provider))
 
 def pick_board_row(board):
     if not board:
-        p_warn("Nessuna riga: mostra prima il tabellone (tasto 1).")
+        p_warn(t("no_rows"))
         return None
-    r = ask(f"Numero riga del treno [1-{len(board)}]: ").strip()
+    r = ask(t("row_pick", n=len(board))).strip()
     try:
         row = board[int(r) - 1] if 1 <= int(r) <= len(board) else None
     except ValueError:
@@ -4069,12 +4877,12 @@ def station_search_pick(q, country):
     if not lst:
         p_warn("Nessuna stazione trovata, riprova.")
         return None
-    p_title(f'🚂 Stazioni · "{q}" [{country}]')
+    p_title(t("stitle", q=q, c=country))
     for i, e in enumerate(lst, 1):
         e = e if isinstance(e, dict) else {}
         name = e.get("name") or e.get("stationName") or "?"
         print(f"  {c_train(f'[{i}]')} {bold(name)}")
-    s = (ask(f"Numero stazione [1-{len(lst)}, 0 = annulla]: ").strip() or "1")
+    s = (ask(t("num_station", n=len(lst))).strip() or "1")
     if s == "0":
         return None
     try:
@@ -4082,7 +4890,7 @@ def station_search_pick(q, country):
     except ValueError:
         choice = None
     if not isinstance(choice, dict):
-        p_warn("Numero non valido.")
+        p_warn(t("invalid_num"))
         return None
     sid = str(choice.get("id") or choice.get("stationId") or "")
     name = str(choice.get("name") or choice.get("stationName") or "?")
@@ -4096,11 +4904,11 @@ def pick_regional_provider(country):
         provs = []
     provs = [p for p in provs if isinstance(p, dict)]
     if not provs:
-        p_warn("Nessun provider regionale.")
+        p_warn(t("reg_none"))
         return None
     for i, p in enumerate(provs, 1):
         print(f"  {ok(f'[{i}]')} {p.get('name', '?')}  {dim(str(p.get('description') or ''))}")
-    s = (ask(f"Numero provider [1-{len(provs)}, 0 = annulla]: ").strip() or "0")
+    s = (ask(t("reg_num", n=len(provs))).strip() or "0")
     try:
         sel = provs[int(s) - 1] if 1 <= int(s) <= len(provs) else None
     except ValueError:
@@ -4124,16 +4932,15 @@ def train_board_loop(sid, country, arrivi, station_name="?", provider=None):
     if not regional:
         save_state({"last_board": {"sid": sid, "country": country,
                                    "arrivi": bool(arrivi), "name": station_name}})
-    opt2 = "Cambia provider" if regional else "Cambia nazione"
+    opt2 = t("opt_provider") if regional else t("opt_country")
     board = []
     while True:
         if regional:
             board = reg_board(country, provider, sid, arrivi) or []
         else:
             board = train_board(sid, country, arrivi) or []
-        nxt = (ask("\nTasto R) Aggiorna [invio]  1) Altra stazione  2) " + opt2 + "  "
-                   f"3) Passa a {'Partenze' if arrivi else 'Arrivi'}  "
-                   f"4) Timeline treno  5) Grafica  0) Menu  [R]: ").strip() or "R")
+        other = t("to_arr") if not arrivi else t("to_dep")
+        nxt = (ask("\n" + t("board_menu", opt2=opt2, other=other)).strip() or "R")
         if nxt.lower() == "r":
             continue
         if nxt == "3":
@@ -4149,7 +4956,7 @@ def train_board_loop(sid, country, arrivi, station_name="?", provider=None):
             trip_id = str(row.get("tripId") or "")
             if nxt == "5":
                 if not trip_id:
-                    p_warn("Trip non disponibile per questa riga.")
+                    p_warn(t("no_trip_row"))
                     continue
                 open_timeline_gui(trip_id, country,
                                   trip_base=base, board_base=base)
@@ -4163,13 +4970,13 @@ def train_board_loop(sid, country, arrivi, station_name="?", provider=None):
                 elif trip_id:
                     reg_trip(country, provider, trip_id)
                 else:
-                    p_warn("Timeline non disponibile per questa riga.")
+                    p_warn(t("no_trip_row"))
             elif trip_id:
                 train_trip(trip_id, country)
             else:
                 num = str(row.get("tripNumber") or row.get("trainNumber") or "")
                 if not num:
-                    p_warn("Trip non disponibile per questa riga.")
+                    p_warn(t("no_trip_row"))
                     continue
                 train_details(num, sid, country)
         elif nxt == "2":
@@ -4189,11 +4996,11 @@ def simple_train():
     while True:
         rec = get_recent("recent_stations")
         if rec:
-            print(f"\n  {dim('Recenti:')}")
+            print(f"\n  {dim(t('recents'))}")
             for i, e in enumerate(rec, 1):
                 print(f"  {c_train(f'[R{i}]')} {e.get('name')}  "
                       f"{dim(str(e.get('sid')) + ' · ' + str(e.get('country')))}")
-        q = ask("\nNome stazione, R-numero (0 = menu): ")
+        q = ask("\n" + t("train_search_prompt"))
         if not q or q.strip() == "0":
             return
         q = q.strip()
@@ -4201,20 +5008,20 @@ def simple_train():
             idx = int(q[1:]) - 1
             if 0 <= idx < len(rec):
                 e = rec[idx]
-                m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+                m = ask(t("dep_arr")).strip() or "1"
                 r = train_board_loop(str(e.get("sid")), str(e.get("country") or country),
                                      m == "2", str(e.get("name") or "?"))
                 if r is None:
                     return
                 country = r.get("country", country)
                 continue
-            p_warn("Recente non valido.")
+            p_warn(t("recent_invalid"))
             continue
         pick = station_search_pick(q, country)
         if pick is None:
             continue
         sid, name = pick
-        m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+        m = ask(t("dep_arr")).strip() or "1"
         r = train_board_loop(sid, country, m == "2", name)
         if r is None:
             return
@@ -4233,7 +5040,7 @@ def simple_bus():
         print(f"  {c_bus(f'[{i}]')} {p.get('name', '?')}  {dim(provider_country(p))}{mark}")
     dflt = next((str(i) for i, p in enumerate(provs, 1)
                  if str(p.get("name", "")) == last_prov), "1")
-    s = ask(f"Numero provider [{dflt}]: ").strip() or dflt
+    s = ask(t("bus_prov_title") + f"[{dflt}]: ").strip() or dflt
     try:
         sel = provs[int(s) - 1]
     except (ValueError, IndexError):
@@ -4252,10 +5059,10 @@ def simple_bus():
         rec = get_recent("recent_busstops")
         rec = [e for e in rec if e.get("provider") == provider][:5]
         if rec:
-            print(f"\n  {dim('Recenti:')}")
+            print(f"\n  {dim(t('recents'))}")
             for i, e in enumerate(rec, 1):
                 print(f"  {c_bus(f'[R{i}]')} {e.get('name')}  {dim(str(e.get('stop_id')))}")
-        q = ask("\nNome fermata, ID o R-numero (0 = menu): ")
+        q = ask("\n" + t("bus_stop_prompt"))
         if not q or q.strip() == "0":
             return
         q = q.strip()
@@ -4266,7 +5073,7 @@ def simple_bus():
                 stop_id = str(rec[idx].get("stop_id"))
                 stop_name = str(rec[idx].get("name") or stop_id)
             else:
-                p_warn("Recente non valido.")
+                p_warn(t("recent_invalid"))
                 continue
         elif q in stop_index:
             stop_id = q
@@ -4285,27 +5092,27 @@ def simple_bus():
             else:
                 for i, x in enumerate(found, 1):
                     print(f"  {c_bus(f'[{i}]')} {x.get('stopName')}  {dim(x.get('stopId'))}")
-                s = ask("Numero fermata o ID diretto (0 = nuova ricerca): ").strip()
-                if s == "0" or not s:
-                    continue
-                choice = None
-                if s in by_id:
-                    choice = by_id[s]
-                else:
-                    try:
-                        choice = found[int(s) - 1] if 1 <= int(s) <= len(found) else None
-                    except ValueError:
-                        choice = None
-                if not choice:
-                    p_warn("Numero non valido.")
-                    continue
-                stop_id = str(choice.get("stopId"))
-                stop_name = str(choice.get("stopName") or stop_id)
+            s = ask(t("bus_stop_pick")).strip()
+            if s == "0" or not s:
+                continue
+            choice = None
+            if s in by_id:
+                choice = by_id[s]
+            else:
+                try:
+                    choice = found[int(s) - 1] if 1 <= int(s) <= len(found) else None
+                except ValueError:
+                    choice = None
+            if not choice:
+                p_warn(t("invalid_num"))
+                continue
+            stop_id = str(choice.get("stopId"))
+            stop_name = str(choice.get("stopName") or stop_id)
         push_recent("recent_busstops",
                     {"name": stop_name, "stop_id": stop_id, "provider": provider})
         while True:
             bus_departures(provider, stop_id, country)
-            nxt = (ask("\nTasto R) Aggiorna [invio]  1) Altra fermata  0) Menu  [R]: ").strip() or "R")
+            nxt = (ask("\n" + t("bus_board_menu")).strip() or "R")
             if nxt.lower() == "r":
                 continue
             elif nxt == "0":
@@ -4315,20 +5122,20 @@ def simple_bus():
 
 def simple_fly():
     while True:
-        q = ask("\nAeroporto, città o codice (0 = menu): ")
+        q = ask("\n" + t("fly_prompt"))
         if not q or q.strip() == "0":
             return
         if len(q.strip()) < 2:
-            p_warn("Scrivi almeno 2 caratteri.")
+            p_warn(t("fly_short"))
             continue
         if len(q.strip()) == 3 and q.strip().isalpha():
             iata = q.strip().upper()
-            m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+            m = ask(t("dep_arr")).strip() or "1"
             arrivi = (m == "2")
             while True:
                 airport(iata, arrivi)
-                nxt = (ask("\nTasto R) Aggiorna [invio]  1) Altro aeroporto  "
-                           f"2) Passa a {'Partenze' if arrivi else 'Arrivi'}  0) Menu  [R]: ").strip() or "R")
+                other = t("to_arr") if not arrivi else t("to_dep")
+                nxt = (ask("\n" + t("fly_menu", o=other)).strip() or "R")
                 if nxt.lower() == "r":
                     continue
                 if nxt == "2":
@@ -4360,7 +5167,7 @@ def simple_fly():
             p_warn("Numero non valido.")
             continue
         iata = str(choice["PlaceId"])
-        m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
+        m = ask(t("dep_arr")).strip() or "1"
         arrivi = (m == "2")
         while True:
             airport(iata, arrivi)
@@ -4460,53 +5267,53 @@ def commands_mode():
 def menu():
     banner()
     while True:
-        print(f"\n{title('MENU PRINCIPALE')}")
-        print(f"  {c_train('1)')} 🟢 Modalità semplice  (nazione → stazione → tabellone)")
-        print(f"  {c_bus('2)')} ⌨️  Modalità comandi   (scrivi il comando diretto)")
-        print(f"  {paint('3)', M)} 🧰 Menu avanzato      (tutte le funzioni)")
-        print(f"  {info('4)')} 📖 Guida comandi      (tutti i comandi)")
-        print(f"  {ok('5)')} ⭐ Preferiti           (apre per tipo: treno/stazione/bus/voli)")
-        print(f"  {paint('6)', B)} 👤 Account             (login, profilo, logout)")
-        print(f"  {dim('0) Esci')}")
+        print(f"\n{title(t('menu_title'))}")
+        print(f"  {c_train('1)')} {t('m_simple')}")
+        print(f"  {c_bus('2)')} {t('m_commands')}")
+        print(f"  {paint('3)', M)} {t('m_advanced')}")
+        print(f"  {info('4)')} {t('m_guide')}")
+        print(f"  {ok('5)')} {t('m_fav')}")
+        print(f"  {paint('6)', B)} {t('m_account')}")
+        print(f"  {paint('7)', C_)} {t('m_config')}")
+        print(f"  {dim('0) ' + t('m_exit'))}")
         nick = (session().get("user") or {}).get("nickname")
         lb = app_state().get("last_board") or {}
-        ctx = f"Paese {last_country()}"
+        ctx = t("m_ctx_country", c=last_country())
         if nick:
             ctx += f" · {nick}"
         if lb.get("sid"):
-            ctx += f" · ultimo: {lb.get('name')} [{lb.get('sid')}]"
-        print(f"  {dim(ctx + ' — scrivi una stazione per cercarla subito')}")
-        c = ask("\nScelta [0-6, help]: ").strip()
+            ctx += " · " + t("m_ctx_last", name=lb.get("name"), sid=lb.get("sid"))
+        print(f"  {dim(ctx + ' ' + t('m_ctx_hint'))}")
+        print(f"  {dim('lingua = ' + '/'.join(LANGS))}")
+        c = ask("\n" + t("m_choice")).strip()
         if c == "1":
             simple_mode()
         elif c == "2":
             commands_mode()
         elif c == "3":
             advanced_menu()
-        elif c == "4" or c.lower() in ("help", "aiuto", "guida", "?"):
+        elif c == "4" or c.lower() in ("help", "aiuto", "guida", "?", "aide", "hilfe"):
             commands_guide()
         elif c == "5":
             favorites_section()
         elif c == "6":
             account_section()
+        elif c == "7":
+            config_section()
+        elif c.lower() in ("lingua", "lang", "language", "sprache", "config"):
+            pick_language()
         elif c.lower() == "ultimo" and lb.get("sid"):
             train_board_loop(str(lb["sid"]), str(lb.get("country") or last_country()),
                              bool(lb.get("arrivi")), str(lb.get("name") or "?"))
+        elif c.lower() == "ultimo":
+            p_warn(t("m_last_none"))
         elif c.split(" ", 1)[0].lower() in COMMANDS:
             run_direct(c)
         elif c in ("0", "q", "exit"):
-            p_ok("Ciao! 👋")
+            p_ok(t("m_bye"))
             return
-        elif len(c) >= 2:
-            # testo libero = ricerca stazione immediata nel paese attuale
-            pick = station_search_pick(c, last_country())
-            if pick is None:
-                continue
-            sid, name = pick
-            m = ask("Tasto 1) Partenze  2) Arrivi  [1]: ").strip() or "1"
-            train_board_loop(sid, last_country(), m == "2", name)
         else:
-            p_warn("Scelta non valida: premi 1-6 oppure scrivi un comando.")
+            p_warn(t("m_invalid"))
 
 def advanced_menu():
     while True:
@@ -4626,6 +5433,8 @@ def build_parser():
         prog="bc_cli.py",
         description="BC.Transporter nel terminale — stessi endpoint dell'app Flutter, output colorato.")
     p.add_argument("--no-color", action="store_true", help="disattiva i colori ANSI")
+    p.add_argument("--lang", choices=["it", "en", "de", "fr", "auto"],
+                   help="lingua interfaccia (salvata, auto = sistema)")
     sub = p.add_subparsers(dest="cmd")
 
     t = sub.add_parser("treni", help="orari treni")
@@ -4747,11 +5556,13 @@ def build_parser():
     fv.add_argument("--rimuovi", metavar="ID")
     fv.add_argument("--check", metavar="ID")
 
-    cf = sub.add_parser("config", help="config + stats globali + loghi")
+    cf = sub.add_parser("config", help="config + stats globali + loghi + lingua")
     cf.add_argument("--show", action="store_true")
     cf.add_argument("--stats-general", action="store_true")
     cf.add_argument("--stats-linee", action="store_true")
     cf.add_argument("--loghi", action="store_true")
+    cf.add_argument("--lang", choices=["it", "en", "de", "fr", "auto"],
+                    help="lingua preferita (auto = sistema)")
 
     of = sub.add_parser("offline", help="cache file (stessa logica OfflineSyncService)")
     of.add_argument("--save", nargs=3, metavar=("TIPO", "ID", "FILE_JSON"))
@@ -4773,6 +5584,14 @@ def main(argv=None):
     a = parser.parse_args(argv)
     if a.no_color:
         USE_COLOR = False
+    if a.lang:
+        set_lang(a.lang)
+    if not a.cmd:
+        try:
+            menu()
+        except BrokenPipeError:
+            pass
+        return
     try:
         if a.cmd == "treni":
             paese = (a.paese or "IT").upper()
@@ -4888,6 +5707,11 @@ def main(argv=None):
             if a.stats_general: stats_general()
             elif a.stats_linee: stats_lines()
             elif a.loghi: train_logos()
+            elif a.lang:
+                if a.lang == "auto":
+                    p_ok(t("cfg_auto_is", lang=LANG_NAMES.get(system_lang(), system_lang())))
+                else:
+                    p_ok(t("cfg_cur", lang=LANG_NAMES.get(a.lang, a.lang)))
             else: config_show()
         elif a.cmd == "offline":
             if a.save: offline_save(*a.save)

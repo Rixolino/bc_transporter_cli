@@ -5532,7 +5532,7 @@ def build_parser():
                    help="lingua interfaccia (salvata, auto = sistema)")
     sub = p.add_subparsers(dest="cmd")
 
-    t = sub.add_parser("treni", help="orari treni")
+    t = sub.add_parser("treni", aliases=["trains"], help="orari treni")
     t.add_argument("--cerca", help="cerca stazione per nome")
     t.add_argument("--partenze", metavar="STATION_ID", help="tabellone stazione")
     t.add_argument("--treno", help="numero treno (richiede --stazione)")
@@ -5569,7 +5569,7 @@ def build_parser():
     t.add_argument("--key", help="trainKey per presence")
     t.add_argument("--limit", type=int, default=20)
 
-    b = sub.add_parser("bus", help="bus urbani")
+    b = sub.add_parser("bus", aliases=["buses"], help="bus urbani")
     b.add_argument("--providers", action="store_true")
     b.add_argument("--linee", metavar="PROVIDER")
     b.add_argument("--fermate", metavar="PROVIDER")
@@ -5584,18 +5584,18 @@ def build_parser():
     b.add_argument("--route-path", metavar="TRIP_ID")
     b.add_argument("--static", metavar="PROVIDER", help="scarica pacchetto offline con progress")
 
-    v = sub.add_parser("voli", help="voli e aeroporti")
+    v = sub.add_parser("voli", aliases=["flights"], help="voli e aeroporti")
     v.add_argument("--area", action="store_true", help="radar sull'Italia")
     v.add_argument("--aeroporto", metavar="IATA")
     v.add_argument("--arrivi", action="store_true")
     v.add_argument("--cerca", metavar="QUERY", help="autosuggest aeroporti Skyscanner")
 
-    f = sub.add_parser("flixbus", help="rete Flixbus")
+    f = sub.add_parser("flixbus", aliases=["flixbuses"], help="rete Flixbus")
     f.add_argument("--stazioni")
     f.add_argument("--partenze", metavar="STATION_ID")
     f.add_argument("--trip", metavar="TRIP_ID")
 
-    r = sub.add_parser("regionali", help="provider regionali (trenord & co.)")
+    r = sub.add_parser("regionali", aliases=["regional"], help="provider regionali (trenord & co.)")
     r.add_argument("--lista", metavar="PAESE", help="provider regionali per paese")
     r.add_argument("--stazioni", nargs=2, metavar=("PAESE", "PREFIX"))
     r.add_argument("--cerca", default="", help="filtro stazioni regionali")
@@ -5604,19 +5604,17 @@ def build_parser():
     r.add_argument("--news", nargs=2, metavar=("PAESE", "PREFIX"))
     r.add_argument("--trip", nargs=3, metavar=("PAESE", "PREFIX", "TRIP_ID"))
 
-    s = sub.add_parser("strade", help="autostrade: news, caselli, servizi")
+    s = sub.add_parser("strade", aliases=["roads"], help="autostrade: news, caselli, servizi")
     s.add_argument("--news", action="store_true")
     s.add_argument("--pedaggi", action="store_true")
     s.add_argument("--servizi", action="store_true")
     s.add_argument("--paese", default="it")
     s.add_argument("--highways", default="")
     s.add_argument("--highway", default="")
-
-    m = sub.add_parser("meteo", help="meteo open-meteo (stessa logica app)")
+    m = sub.add_parser("meteo", aliases=["weather"], help="meteo open-meteo (stessa logica app)")
     m.add_argument("--cerca", metavar="CITTA")
     m.add_argument("--ora", nargs=3, metavar=("CITTA", "LAT", "LON"))
-
-    sc = sub.add_parser("social", help="bacheca viaggiatori")
+    sc = sub.add_parser("social", aliases=["socials"], help="bacheca viaggiatori")
     sc.add_argument("--feed", action="store_true")
     sc.add_argument("--limit", type=int, default=30)
     sc.add_argument("--publish", nargs=2, metavar=("TRAIN_KEY", "NICK"))
@@ -5627,19 +5625,14 @@ def build_parser():
     sc.add_argument("--user", metavar="NICK")
     sc.add_argument("--leaderboard", action="store_true")
     sc.add_argument("--online", action="store_true")
-
-    au = sub.add_parser("auth", help="login/registrazione/profilo (API web)")
-    au.add_argument("--login", nargs=2, metavar=("EMAIL", "PW"))
+    au = sub.add_parser("auth", aliases=["authenticate"], help="login/registrazione/profilo (API web)")
     au.add_argument("--register", nargs=3, metavar=("EMAIL", "PW", "NICK"))
     au.add_argument("--disponibile", metavar="NICK")
     au.add_argument("--profilo", metavar="NICK")
     au.add_argument("--elimina", metavar="PW")
     au.add_argument("--stato", action="store_true")
     au.add_argument("--logout", action="store_true")
-
-    fv = sub.add_parser("preferiti", help="preferiti (database se loggato, come l'app)")
-    fv.add_argument("--lista", action="store_true")
-    fv.add_argument("--cloud", action="store_true")
+    fv = sub.add_parser("preferiti", aliases=["favorites"], help="preferiti (database se loggato, come l'app)")
     fv.add_argument("--sync", action="store_true")
     fv.add_argument("--treno", nargs=3, metavar=("NUMERO", "ORIGINE", "DEST"))
     fv.add_argument("--fermata", nargs=2, metavar=("CODICE", "NOME"))
@@ -5651,20 +5644,14 @@ def build_parser():
     fv.add_argument("--rimuovi", metavar="ID")
     fv.add_argument("--check", metavar="ID")
 
-    cf = sub.add_parser("config", help="config + stats globali + loghi + lingua")
-    cf.add_argument("--show", action="store_true")
-    cf.add_argument("--stats-general", action="store_true")
-    cf.add_argument("--stats-linee", action="store_true")
+    cf = sub.add_parser("config", aliases=["configuration"], help="config + stats globali + loghi + lingua")
     cf.add_argument("--loghi", action="store_true")
     cf.add_argument("--lang", choices=["it", "en", "de", "fr", "auto"],
                     help="lingua preferita (auto = sistema)")
 
-    of = sub.add_parser("offline", help="cache file (stessa logica OfflineSyncService)")
+    of = sub.add_parser("offline", aliases=["offline_cache"], help="cache file (stessa logica OfflineSyncService)")
     of.add_argument("--save", nargs=3, metavar=("TIPO", "ID", "FILE_JSON"))
-    of.add_argument("--get", nargs=2, metavar=("TIPO", "ID"))
-    of.add_argument("--lista", action="store_true")
-    of.add_argument("--clear", action="store_true")
-    of.add_argument("--size", action="store_true")
+
     return p
 
 def main(argv=None):
@@ -5677,16 +5664,16 @@ def main(argv=None):
             pass
         return
     a = parser.parse_args(argv)
-    if a.no_color:
-        USE_COLOR = False
-    if a.lang:
-        set_lang(a.lang)
-    if not a.cmd:
-        try:
-            menu()
-        except BrokenPipeError:
-            pass
-        return
+
+    # Normalizzazione comandi (English -> Italian)
+    cmd_map = {
+        "trains": "treni", "buses": "bus", "flights": "voli",
+        "flixbuses": "flixbus", "regional": "regionali", "roads": "strade",
+        "weather": "meteo", "socials": "social", "authenticate": "auth",
+        "favorites": "preferiti", "configuration": "config", "offline_cache": "offline"
+    }
+    if a.cmd in cmd_map:
+        a.cmd = cmd_map[a.cmd]
     try:
         if a.cmd == "treni":
             paese = (a.paese or "IT").upper()

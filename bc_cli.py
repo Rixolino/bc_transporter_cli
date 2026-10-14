@@ -428,7 +428,7 @@ def print_timeline(stops):
             else:
                 print(f"  {dim('│')}")
 
-def print_board_table(lst, arrivi):
+def print_board_table(lst, arrivi, page=0, page_size=20):
     """Tabella tabellone identica per nazionale e regionali (stesso formato)."""
     if not lst:
         p_warn(t("board_empty"))
@@ -436,7 +436,12 @@ def print_board_table(lst, arrivi):
     head_place = t("col_from") if arrivi else t("col_dest")
     rows = []
     data_rows = []
-    for raw in lst[:30]:
+    
+    start = page * page_size
+    end = start + page_size
+    subset = lst[start:end]
+    
+    for raw in subset:
         if not isinstance(raw, dict):
             continue
         e = raw.get("data") if isinstance(raw.get("data"), dict) else raw
@@ -461,10 +466,12 @@ def print_board_table(lst, arrivi):
     for i, r in enumerate(rows, 1):
         print(f"  {c_train(pad_v(str(i), w[0]))} {bold(pad_v(r[0], w[1]))} {pad_v(r[1], w[2])} "
               f"{pad_v(r[2], w[3])} {pad_v(r[3], w[4])} {r[4]}")
-    p_dim(t("board_total", n=len(lst)))
+    
+    total = len(lst)
+    p_dim(f"Pagina {page+1} ({start+1}-{min(end, total)} di {total})")
     return data_rows
 
-def train_board(station_id, country, arrivi):
+def train_board(station_id, country, arrivi, page=0):
     ep = "arrivals" if arrivi else "departures"
     p_title(t("board_title_dep" if not arrivi else "board_title_arr",
               sid=station_id, c=country))
@@ -474,7 +481,7 @@ def train_board(station_id, country, arrivi):
         lst = as_list(get_json(url))
     except Exception as e:
         return p_err(f"Errore tabellone: {e}")
-    return print_board_table(lst, arrivi) or []
+    return print_board_table(lst, arrivi, page=page) or []
 
 def train_details(numero, stazione, country):
     p_title(t("det_title", n=numero, s=stazione, c=country))
@@ -5028,15 +5035,21 @@ def train_board_loop(sid, country, arrivi, station_name="?", provider=None):
         save_state({"last_board": {"sid": sid, "country": country,
                                    "arrivi": bool(arrivi), "name": station_name}})
     opt2 = t("opt_provider") if regional else t("opt_country")
-    board = []
+    page = 0
     while True:
         if regional:
             board = reg_board(country, provider, sid, arrivi) or []
         else:
-            board = train_board(sid, country, arrivi) or []
+            board = train_board(sid, country, arrivi, page=page) or []
         other = t("to_arr") if not arrivi else t("to_dep")
-        nxt = (ask("\n" + t("board_menu", opt2=opt2, other=other)).strip() or "R")
+        nxt = (ask("\n" + t("board_menu", opt2=opt2, other=other) + " [N=Next, P=Prev]") .strip() or "R")
         if nxt.lower() == "r":
+            continue
+        if nxt.lower() == "n":
+            page += 1
+            continue
+        if nxt.lower() == "p":
+            page = max(0, page - 1)
             continue
         if nxt == "3":
             arrivi = not arrivi

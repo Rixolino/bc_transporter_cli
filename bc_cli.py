@@ -41,6 +41,7 @@ Globale: --no-color
 """
 
 import argparse
+import getpass
 import json
 import sys
 import urllib.parse
@@ -316,6 +317,13 @@ def short(v, maxlen=34):
 def ask(prompt):
     try:
         return input(paint(prompt, C_)).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+def ask_password(prompt):
+    try:
+        return getpass.getpass(paint(prompt, C_)).strip()
     except (EOFError, KeyboardInterrupt):
         print()
         return ""
@@ -3738,11 +3746,11 @@ def account_section():
         elif c == "1":
             auth_status()
         elif c == "2":
-            e, p = ask(t("ask_email")), ask(t("ask_pw"))
+            e, p = ask(t("ask_email")), ask_password(t("ask_pw"))
             if e and p:
                 auth_login(e, p)
         elif c == "3":
-            e, p, n = ask(t("ask_email")), ask(t("ask_pw")), ask(t("ask_nick"))
+            e, p, n = ask(t("ask_email")), ask_password(t("ask_pw")), ask(t("ask_nick"))
             if e and p and n:
                 auth_register(e, p, n)
         elif c == "4":
@@ -3756,7 +3764,7 @@ def account_section():
         elif c == "6":
             auth_logout()
         elif c == "7":
-            p = ask(t("ask_del_pw"))
+            p = ask_password(t("ask_del_pw"))
             if p:
                 auth_delete(p)
         else:
